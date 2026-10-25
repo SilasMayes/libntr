@@ -15,9 +15,11 @@ libsim_srcs = files(
     'g3_handler.cpp',
     'queue.c',
     'sim_assert.c',
+    'sim_android.cpp',
     'sim_audio.cpp',
     'sim_crc32.c',
     'sim_debug.cpp',
+    'sim_display.cpp',
     'sim_g2.cpp',
     'sim_g3_CommandProcessor.cpp',
     'sim_g3_Texture.cpp',
@@ -34,6 +36,6 @@ libsim_srcs = files(
     'sim_vars.c'
 )
 
-if(build_target == 'linux' or build_target == 'win64')
+if((build_target == 'linux' or build_target == 'win64') and not get_option('gles'))
 libsim_srcs += files('glad.c')
 endif

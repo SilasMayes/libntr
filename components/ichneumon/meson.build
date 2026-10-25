@@ -47,5 +47,7 @@ ichneumon_sub = executable('ichneumon_sub',
         ichneumon_link_args_list
     ],
     link_depends: ichneumon_sub_lcf,
+    # Only the DS ROM packs the ARM7 binary; Android has no use for it (and no main())
+    build_by_default: build_target != 'android',
     native: false
 )

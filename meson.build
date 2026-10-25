@@ -150,6 +150,20 @@ if (build_target == 'nx')
     ]
 endif
 
+if (build_target == 'android')
+    # Android is Linux underneath: reuse the LP64 Linux paths, plus Android-only hooks.
+    nitrosdk_args += [
+        '-DSDK_PORT',
+        '-DSDK_AARCH64',
+        '-DSDK_BUILD_LINUX',
+        '-DSDK_BUILD_ANDROID',
+        '-DSDK_64BIT',
+        '-D_NITRO',
+        '-fPIC',
+        '-w',
+    ]
+endif
+
 if (build_target == 'prospero')
     nitrosdk_args += [
         '-DSDK_PORT',

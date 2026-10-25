@@ -35,20 +35,33 @@ void main()
             discard;
         }
     }
+    // Fetch every layer once, with constant sampler indices. Indexing sampler
+    // arrays with non-uniform values is undefined in GLSL (and breaks on GLES).
+    vec4 bgc[4];
+    bgc[0] = texture(bgTexture[0], fragTexCoord);
+    bgc[1] = texture(bgTexture[1], fragTexCoord);
+    bgc[2] = texture(bgTexture[2], fragTexCoord);
+    bgc[3] = texture(bgTexture[3], fragTexCoord);
+    vec4 objc[4];
+    objc[0] = texture(objTexture[0], fragTexCoord);
+    objc[1] = texture(objTexture[1], fragTexCoord);
+    objc[2] = texture(objTexture[2], fragTexCoord);
+    objc[3] = texture(objTexture[3], fragTexCoord);
+    vec4 objWin = texture(objWindowTexture, fragTexCoord);
     for(int i=0; i<4; i++) {
         int bgNum = bgOrder[i];
         int curPrio = bgPriorities[bgNum];
         // Draw the OBJs that are at or below the current BG priority
         for(int j=3-oamsDrawn; j>curPrio; j--) {
-            if(texture(objTexture[j], fragTexCoord).a > 0.1) {
-                color = texture(objTexture[j], fragTexCoord);
+            if(objc[j].a > 0.1) {
+                color = objc[j];
                 currentBgDrawn = 4;
             }
             oamsDrawn++;
         }
         
         // Check obj window
-        if(objWindowEnabled && texture(objWindowTexture, fragTexCoord).a > 0.1)
+        if(objWindowEnabled && objWin.a > 0.1)
         {
             // Inside the window
             if(((winout >> (bgNum+8)) & 1) == 0) {
@@ -61,59 +74,59 @@ void main()
             }
         }
         // Draw the current bg
-        if(texture(bgTexture[bgNum], fragTexCoord).a > 0.1) {
+        if(bgc[bgNum].a > 0.1) {
             //Handle blending
             if( (((bldcnt >> 6) & 0x3) == 1) && ((bldcnt >> bgNum & 1) == 1) ){
                 // Alpha Blending Mode. bgNum is Target 1.
                 float alphaA = min(16.0, float(bldalpha & 31)) / 16.0;
                 float alphaB = min(16.0, float((bldalpha >> 8) & 31)) / 16.0;
                 if(bgNum == 0 && bg0as3d != 0) {
-                    alphaA = texture(bgTexture[0], fragTexCoord).a;
+                    alphaA = bgc[0].a;
                     alphaB = 1.0 - alphaA;
                 }
                 if((currentBgDrawn < 4) && (((bldcnt >> (8+currentBgDrawn)) & 1) == 1) ) {
-                    color.r = min(1.0, ((texture(bgTexture[bgNum], fragTexCoord).r *alphaA) + (texture(bgTexture[currentBgDrawn], fragTexCoord).r * alphaB)));
-                    color.g = min(1.0, ((texture(bgTexture[bgNum], fragTexCoord).g *alphaA) + (texture(bgTexture[currentBgDrawn], fragTexCoord).g * alphaB)));
-                    color.b = min(1.0, ((texture(bgTexture[bgNum], fragTexCoord).b *alphaA) + (texture(bgTexture[currentBgDrawn], fragTexCoord).b * alphaB)));
+                    color.r = min(1.0, ((bgc[bgNum].r *alphaA) + (bgc[currentBgDrawn].r * alphaB)));
+                    color.g = min(1.0, ((bgc[bgNum].g *alphaA) + (bgc[currentBgDrawn].g * alphaB)));
+                    color.b = min(1.0, ((bgc[bgNum].b *alphaA) + (bgc[currentBgDrawn].b * alphaB)));
                     color.a = 1.0;
                     currentBgDrawn = bgNum;
                 } else if( (currentBgDrawn == 4) && ( ( (bldcnt >> (8+currentBgDrawn)) & 1) == 1) ){
                     // Alpha blending where the highest OBJ pixel is the target
-                    color.r = min(1.0, ( (texture(bgTexture[bgNum], fragTexCoord).r *alphaA) + color.r * alphaB) );
-                    color.g = min(1.0, ( (texture(bgTexture[bgNum], fragTexCoord).g *alphaA) + color.g * alphaB) );
-                    color.b = min(1.0, ( (texture(bgTexture[bgNum], fragTexCoord).b *alphaA) + color.b * alphaB) );
+                    color.r = min(1.0, ( (bgc[bgNum].r *alphaA) + color.r * alphaB) );
+                    color.g = min(1.0, ( (bgc[bgNum].g *alphaA) + color.g * alphaB) );
+                    color.b = min(1.0, ( (bgc[bgNum].b *alphaA) + color.b * alphaB) );
                     color.a = 1.0;
                 } else if((currentBgDrawn == 5) && (((bldcnt >> (8+currentBgDrawn)) & 1) == 1)) {
                     // Alpha blending where the backdrop is the target
-                    color.r = min(1.0, ((texture(bgTexture[bgNum], fragTexCoord).r *alphaA) + backdropColor.r * alphaB));
-                    color.g = min(1.0, ((texture(bgTexture[bgNum], fragTexCoord).g *alphaA) + backdropColor.g * alphaB));
-                    color.b = min(1.0, ((texture(bgTexture[bgNum], fragTexCoord).b *alphaA) + backdropColor.b * alphaB));
+                    color.r = min(1.0, ((bgc[bgNum].r *alphaA) + backdropColor.r * alphaB));
+                    color.g = min(1.0, ((bgc[bgNum].g *alphaA) + backdropColor.g * alphaB));
+                    color.b = min(1.0, ((bgc[bgNum].b *alphaA) + backdropColor.b * alphaB));
                     color.a = 1.0;
                 } else {
-                    color = texture(bgTexture[bgNum], fragTexCoord);
+                    color = bgc[bgNum];
                     currentBgDrawn = bgNum;
                 }
             } else if((((bldcnt >> 6) & 0x3) == 2) && ((bldcnt >> bgNum & 1) == 1)) {
                 // Brightness Increase Mode. bgNum is Target 1.
                 float brightFactor = min(16.0, float(bldy & 31)) / 16.0;
-                //color.r = min(1.0, ( texture(bgTexture[bgNum], fragTexCoord).r + ((1.0 - texture(bgTexture[bgNum], fragTexCoord).r)*brightFactor)) );
-                //color.g = min(1.0, ( texture(bgTexture[bgNum], fragTexCoord).g + ((1.0 - texture(bgTexture[bgNum], fragTexCoord).g)*brightFactor)) );
-                //color.b = min(1.0, ( texture(bgTexture[bgNum], fragTexCoord).b + ((1.0 - texture(bgTexture[bgNum], fragTexCoord).b)*brightFactor)) );
-                color.r = texture(bgTexture[bgNum], fragTexCoord).r + (1.0 - texture(bgTexture[bgNum], fragTexCoord).r)*brightFactor;
-                color.g = texture(bgTexture[bgNum], fragTexCoord).g + (1.0 - texture(bgTexture[bgNum], fragTexCoord).g)*brightFactor;
-                color.b = texture(bgTexture[bgNum], fragTexCoord).b + (1.0 - texture(bgTexture[bgNum], fragTexCoord).b)*brightFactor;
+                //color.r = min(1.0, ( bgc[bgNum].r + ((1.0 - bgc[bgNum].r)*brightFactor)) );
+                //color.g = min(1.0, ( bgc[bgNum].g + ((1.0 - bgc[bgNum].g)*brightFactor)) );
+                //color.b = min(1.0, ( bgc[bgNum].b + ((1.0 - bgc[bgNum].b)*brightFactor)) );
+                color.r = bgc[bgNum].r + (1.0 - bgc[bgNum].r)*brightFactor;
+                color.g = bgc[bgNum].g + (1.0 - bgc[bgNum].g)*brightFactor;
+                color.b = bgc[bgNum].b + (1.0 - bgc[bgNum].b)*brightFactor;
                 color.a = 1.0;
                 currentBgDrawn = bgNum;
             } else if((((bldcnt >> 6) & 0x3) == 3) && ((bldcnt >> bgNum & 1) == 1)) {
                 // Brightness Decrease Mode. bgNum is Target 1.
                 float brightFactor = min(16.0, float(bldy & 31)) / 16.0;
-                color.r = max(0.0, ( texture(bgTexture[bgNum], fragTexCoord).r - ((texture(bgTexture[bgNum], fragTexCoord).r)*brightFactor)) );
-                color.g = max(0.0, ( texture(bgTexture[bgNum], fragTexCoord).g - ((texture(bgTexture[bgNum], fragTexCoord).g)*brightFactor)) );
-                color.b = max(0.0, ( texture(bgTexture[bgNum], fragTexCoord).b - ((texture(bgTexture[bgNum], fragTexCoord).b)*brightFactor)) );
+                color.r = max(0.0, ( bgc[bgNum].r - ((bgc[bgNum].r)*brightFactor)) );
+                color.g = max(0.0, ( bgc[bgNum].g - ((bgc[bgNum].g)*brightFactor)) );
+                color.b = max(0.0, ( bgc[bgNum].b - ((bgc[bgNum].b)*brightFactor)) );
                 color.a = 1.0;
                 currentBgDrawn = bgNum;
             } else {
-                color.rgb = texture(bgTexture[bgNum], fragTexCoord).rgb;
+                color.rgb = bgc[bgNum].rgb;
                 color.a = 1.0;
                 currentBgDrawn = bgNum;
             }
@@ -121,8 +134,8 @@ void main()
     }
     //Draw the remaining objs
     for(int i=3-oamsDrawn; i>=0; i--) {
-        if(texture(objTexture[i], fragTexCoord).a > 0.1) {
-            color = texture(objTexture[i], fragTexCoord);
+        if(objc[i].a > 0.1) {
+            color = objc[i];
             currentBgDrawn = 4;
         }
     }

@@ -11,6 +11,9 @@ elif(build_target == 'nx')
 sdl2_lib = meson.get_compiler('c').find_library('SDL2', dirs: '/opt/devkitpro/portlibs/switch/lib/')
 elif(build_target == 'prospero')
 sdl2_lib = meson.get_compiler('c').find_library('SDL2', dirs: prospero_lib_dirs)
+elif(build_target == 'android')
+# SDL2 is built by the Android CI (or the developer) and found through the cross file's -L paths
+sdl2_lib = meson.get_compiler('c').find_library('SDL2')
 endif
 sdl2_dep = declare_dependency(dependencies: [sdl2_lib])
 
@@ -20,12 +23,28 @@ enet_dep = declare_dependency(dependencies: [enet_lib])
 elif(build_target == 'nx')
 enet_lib = meson.get_compiler('c').find_library('enet', dirs: '/opt/devkitpro/portlibs/switch/lib/')
 enet_dep = declare_dependency(dependencies: [enet_lib])
+elif(build_target == 'android')
+enet_lib = meson.get_compiler('c').find_library('enet', static: true)
+enet_dep = declare_dependency(dependencies: [enet_lib])
 endif
 
 
 libsim_dependencies = [sdl2_dep]
-if(build_target == 'linux' or build_target == 'win64' or build_target == 'nx')
+if(build_target == 'linux' or build_target == 'win64' or build_target == 'nx' or build_target == 'android')
     libsim_dependencies += enet_dep
+endif
+
+# OpenGL ES 3.2 renderer (always used on Android, optional on desktop Linux for testing)
+use_gles = get_option('gles') or build_target == 'android'
+if(build_target == 'android')
+    libsim_dependencies += [
+        meson.get_compiler('c').find_library('GLESv3'),
+        meson.get_compiler('c').find_library('EGL'),
+        meson.get_compiler('c').find_library('android'),
+        meson.get_compiler('c').find_library('log'),
+    ]
+elif(use_gles)
+    libsim_dependencies += meson.get_compiler('c').find_library('GLESv2')
 endif
 
 # PS5 external libraries
@@ -72,6 +91,10 @@ endif
 
 
 libsim_args = [ ]
+
+if(use_gles)
+    libsim_args += ['-DSIM_GLES=1', '-DIMGUI_IMPL_OPENGL_ES3']
+endif
 
 if(build_target == 'win64')
 ws2_32_lib = meson.get_compiler('c').find_library('ws2_32')
@@ -150,7 +173,9 @@ libsim = library('sim',
     include_directories: [nitrosdk_includes, libsim_includes],
     pic: build_target == 'nx',
     c_args: libsim_args,
-    cpp_args: [libsim_args, '-O2', '-std=c++20'],
+    # The register globals are written as contiguous blocks (like the real I/O space),
+    # which _FORTIFY_SOURCE (default on Ubuntu and the NDK) reports as an overflow.
+    cpp_args: [libsim_args, '-O2', '-std=c++20', '-U_FORTIFY_SOURCE'],
     sources: [libsim_srcs, fx_const_h, git_info_h],
     dependencies: libsim_dependencies,
     native: (build_target == 'linux' or build_target == 'win64')

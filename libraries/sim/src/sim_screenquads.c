@@ -514,3 +514,33 @@ int sim_GetScreenQuadVertexCount(SIM_config_screen_layout_type layout, BOOL isSw
             return 12;
     }
 }
+
+// One DS screen stretched over the whole viewport. Used when each screen gets its own
+// display/window. The 2D compositing texture stores the top screen in t=[0.5,1].
+static G3SIM_Vertex_t s_SingleTopScreenQuad[] = {
+    { .x = -1.0f, .y = -1.0f, .z = 1.0f, .s = 0.0f, .t = 0.5f },
+    { .x = -1.0f, .y =  1.0f, .z = 1.0f, .s = 0.0f, .t = 1.0f },
+    { .x =  1.0f, .y = -1.0f, .z = 1.0f, .s = 1.0f, .t = 0.5f },
+    { .x =  1.0f, .y = -1.0f, .z = 1.0f, .s = 1.0f, .t = 0.5f },
+    { .x =  1.0f, .y =  1.0f, .z = 1.0f, .s = 1.0f, .t = 1.0f },
+    { .x = -1.0f, .y =  1.0f, .z = 1.0f, .s = 0.0f, .t = 1.0f },
+};
+
+static G3SIM_Vertex_t s_SingleBottomScreenQuad[] = {
+    { .x = -1.0f, .y = -1.0f, .z = 1.0f, .s = 0.0f, .t = 0.0f },
+    { .x = -1.0f, .y =  1.0f, .z = 1.0f, .s = 0.0f, .t = 0.5f },
+    { .x =  1.0f, .y = -1.0f, .z = 1.0f, .s = 1.0f, .t = 0.0f },
+    { .x =  1.0f, .y = -1.0f, .z = 1.0f, .s = 1.0f, .t = 0.0f },
+    { .x =  1.0f, .y =  1.0f, .z = 1.0f, .s = 1.0f, .t = 0.5f },
+    { .x = -1.0f, .y =  1.0f, .z = 1.0f, .s = 0.0f, .t = 0.5f },
+};
+
+G3SIM_Vertex_t * sim_GetSingleScreenQuadArray(BOOL bottomScreen)
+{
+    return bottomScreen ? s_SingleBottomScreenQuad : s_SingleTopScreenQuad;
+}
+
+int sim_GetSingleScreenQuadVertexCount(void)
+{
+    return 6;
+}

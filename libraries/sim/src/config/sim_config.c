@@ -53,6 +53,9 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "SwapScreens")) {
         config->swapScreens = StringToBool(value);
     }
+    if(MATCH("General", "SecondaryScreen")) {
+        config->secondaryScreen = StringToBool(value);
+    }
     if(MATCH("General", "VsyncInterval")) {
         config->vsyncInterval = atoi(value);
     }
@@ -342,6 +345,11 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->internalResolutionScale = 2;
     aConfig->windowHeight = 1080;
     aConfig->windowWidth = 1920;
+#elif defined(SDK_BUILD_ANDROID)
+    // Mobile GPUs: 5x keeps 3D sharp on a 1080p panel without wasting fill rate
+    aConfig->internalResolutionScale = 5;
+    aConfig->windowHeight = 0;
+    aConfig->windowWidth = 0;
 #else
     aConfig->internalResolutionScale = 10;
     aConfig->windowHeight = 0;
@@ -350,6 +358,11 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->fullScreen = FALSE;
     aConfig->screenLayout = SIM_CONFIG_SCREEN_LAYOUT_VERTICAL;
     aConfig->swapScreens = FALSE;
+#ifdef SDK_BUILD_ANDROID
+    aConfig->secondaryScreen = TRUE;
+#else
+    aConfig->secondaryScreen = FALSE;
+#endif
     aConfig->vsyncInterval = 1;
     aConfig->capFrameRate = TRUE;
     aConfig->masterVolume = 127;
@@ -367,7 +380,12 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->padSettings.rKey = SDLK_e;
     aConfig->padSettings.startKey = SDLK_RETURN;
     aConfig->padSettings.selectKey = SDLK_RSHIFT;
+#ifdef SDK_BUILD_ANDROID
+    // The Android back button/gesture opens the settings GUI
+    aConfig->padSettings.guiKey = SDLK_AC_BACK;
+#else
     aConfig->padSettings.guiKey = SDLK_BACKQUOTE;
+#endif
     aConfig->padSettings.frameCapToggleKey = SDLK_TAB;
     aConfig->padSettings.frameCapKey = SDLK_SPACE;
     aConfig->padSettings.aJoyKey = 0;
@@ -431,6 +449,7 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     const char * screenLayoutString = ScreenLayoutTypeToString(aConfig->screenLayout);
     fprintf(configFile, "ScreenLayout=%s\n", screenLayoutString);
     fprintf(configFile, "SwapScreens=%s\n", BoolToString(aConfig->swapScreens));
+    fprintf(configFile, "SecondaryScreen=%s\n", BoolToString(aConfig->secondaryScreen));
     fprintf(configFile, "VsyncInterval=%d\n", aConfig->vsyncInterval);
     fprintf(configFile, "CapFrameRate=%s\n", BoolToString(aConfig->capFrameRate));
     fprintf(configFile, "MacAddr=%02x%02x%02x%02x%02x%02x\n", aConfig->macAddr[0],

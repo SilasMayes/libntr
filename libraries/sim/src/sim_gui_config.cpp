@@ -42,6 +42,7 @@ void AppConfigMain(bool *openState) {
     int vSyncInterval = sConfig->vsyncInterval;
     bool frameLimit = sConfig->capFrameRate;
     bool fullScreen = sConfig->fullScreen;
+    bool secondaryScreen = sConfig->secondaryScreen;
     
     ImGui::Begin("Config", openState);
 
@@ -61,6 +62,15 @@ void AppConfigMain(bool *openState) {
     if(ImGui::Checkbox("Swap Screens", &swapScreens)) {
         configChanged = true;
     }
+#ifdef SDK_BUILD_ANDROID
+    if(ImGui::Checkbox("Bottom screen on second display", &secondaryScreen)) {
+        configChanged = true;
+    }
+#else
+    if(ImGui::Checkbox("Bottom screen in its own window", &secondaryScreen)) {
+        configChanged = true;
+    }
+#endif
     if(ImGui::Combo("VSync", &vSyncInterval, VblankStrings, 3, 3)) {
         configChanged = true;
     }
@@ -78,6 +88,7 @@ void AppConfigMain(bool *openState) {
     if(configChanged) {
         sConfig->screenLayout = static_cast<SIM_config_screen_layout_type>(screenLayout);
         sConfig->swapScreens = swapScreens;
+        sConfig->secondaryScreen = secondaryScreen;
         sConfig->fullScreen = fullScreen;
         if(sConfig->fullScreen) {
             SDL_SetWindowFullscreen(SIM_GetSDLWindow(), SDL_WINDOW_FULLSCREEN_DESKTOP);

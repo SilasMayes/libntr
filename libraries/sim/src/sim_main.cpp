@@ -1,6 +1,9 @@
 extern "C" void NitroMain();
 extern "C" int NitroSpMain(void *arg);
+#ifndef SDK_BUILD_ANDROID
+// On Android, SDL's Java activity calls SDL_main(): let SDL_main.h rename main() below.
 #define SDL_MAIN_HANDLED
+#endif
 
 #include <string>
 #define _POSIX_C_SOURCE 199309L
@@ -32,6 +35,10 @@ extern "C" int NitroSpMain(void *arg);
 #include <simulator/g3_draw.h>
 #include <simulator/g3_handler.h>
 #include <simulator/sim_gui.hpp>
+#include <simulator/sim_display.h>
+#ifdef SDK_BUILD_ANDROID
+#include <simulator/sim_android.h>
+#endif
 
 #include <math.h>
 #include <time.h>
@@ -227,16 +234,55 @@ static SDL_sem *vcountVblankSemaphore;
 
 SDL_Joystick *s_SIM_SDLJoystick = NULL;
 
+// Which single DS screen DrawScreenQuad() should draw when each screen has its own output
+enum SingleScreenQuad {
+  SINGLE_SCREEN_NONE = -1, // use the configured multi-screen layout
+  SINGLE_SCREEN_TOP = 0,
+  SINGLE_SCREEN_BOTTOM = 1,
+};
+static SingleScreenQuad s_SingleScreenQuad = SINGLE_SCREEN_NONE;
+
+// Touch panel rectangle on the secondary output, in its drawable's pixels
+static int s_SecondaryTouchRect[4] = {};
+// Was the bottom screen on the secondary output last frame?
+static bool s_WasDualScreen = false;
+
+// Fits a DS-shaped rectangle of the given aspect ratio into a drawable, centered.
+static void FitViewport(int drawableWidth, int drawableHeight, float aspectRatio,
+                        int *viewX, int *viewY, int *viewWidth,
+                        int *viewHeight) {
+  *viewX = 0;
+  *viewWidth = drawableWidth;
+  *viewHeight = (int)((float)drawableWidth / aspectRatio);
+  *viewY = (drawableHeight - *viewHeight) / 2;
+  if (*viewHeight > drawableHeight) {
+    // Too tall to fit. Scale down the width instead
+    *viewHeight = drawableHeight;
+    *viewWidth = (int)((float)*viewHeight * aspectRatio);
+    *viewX = (drawableWidth - *viewWidth) / 2;
+    *viewY = 0;
+  }
+}
+
 static void DrawScreenQuad() {
 #ifdef SDK_TRACY_ENABLE
   TracyCZone(ctx, 1);
 #endif
   glBindVertexArray(g2vertexArray);
   glBindBuffer(GL_ARRAY_BUFFER, g2vertexBuffer);
-  G3SIM_Vertex_t *quadArray = sim_GetScreenQuadArray(s_SIM_config.screenLayout,
-                                                     s_SIM_config.swapScreens);
-  int arrayCount = sim_GetScreenQuadVertexCount(s_SIM_config.screenLayout,
-                                                s_SIM_config.swapScreens);
+  G3SIM_Vertex_t *quadArray;
+  int arrayCount;
+  if (s_SingleScreenQuad != SINGLE_SCREEN_NONE) {
+    // Separate outputs: one DS screen fills the whole viewport
+    quadArray = sim_GetSingleScreenQuadArray(s_SingleScreenQuad ==
+                                             SINGLE_SCREEN_BOTTOM);
+    arrayCount = sim_GetSingleScreenQuadVertexCount();
+  } else {
+    quadArray = sim_GetScreenQuadArray(s_SIM_config.screenLayout,
+                                       s_SIM_config.swapScreens);
+    arrayCount = sim_GetScreenQuadVertexCount(s_SIM_config.screenLayout,
+                                              s_SIM_config.swapScreens);
+  }
 
   glBufferData(GL_ARRAY_BUFFER, sizeof(G3SIM_Vertex_t) * arrayCount, quadArray,
                GL_STATIC_DRAW);
@@ -310,9 +356,18 @@ void *SIM_RenderInit(void *arg) {
            SDL_INIT_JOYSTICK);
   SIM_Audio_Init(44100);
 
+#ifdef SIM_GLES
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+  SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+  SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+  SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+#else
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
   SDL_GL_SetSwapInterval(s_SIM_config.vsyncInterval);
@@ -372,19 +427,28 @@ void *SIM_RenderInit(void *arg) {
                   std::string(makerCode) + "]";
   }
 
+  Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+#ifdef SDK_BUILD_ANDROID
+  // Android windows always cover the display; the activity decides orientation.
+  windowFlags |= SDL_WINDOW_FULLSCREEN;
+#endif
+
   window = SDL_CreateWindow(
       windowTitle.c_str(), 100, 100, windowWidth, windowHeight,
-      SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+      windowFlags);
   context = SDL_GL_CreateContext(window);
+  SDL_GL_SetSwapInterval(s_SIM_config.vsyncInterval);
 
   if(s_SIM_config.fullScreen) {
     SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
   }
 
-  #ifndef SDK_BUILD_PROSPERO
-  //OpenGL is static linked on PS5
+  #if !defined(SDK_BUILD_PROSPERO) && !defined(SIM_GLES)
+  //OpenGL is static linked on PS5, and GLES is linked directly
   gladLoadGLLoader(SDL_GL_GetProcAddress);
   #endif
+
+  SDL_GetWindowSize(window, (int *)&windowWidth, (int *)&windowHeight);
 
   glViewport(0, 0, windowWidth, windowHeight);
 
@@ -448,7 +512,7 @@ void *SIM_RenderInit(void *arg) {
   glCompileShader(_id);                                                        \
   glGetShaderiv(_id, GL_COMPILE_STATUS, &status);                              \
   if (status != GL_TRUE) {                                                     \
-    glGetShaderiv(g2FragmentShader, GL_INFO_LOG_LENGTH, &logSize);             \
+    glGetShaderiv(_id, GL_INFO_LOG_LENGTH, &logSize);                          \
     errorBuf = static_cast<GLchar *>(malloc(logSize * sizeof(GLchar)));        \
     glGetShaderInfoLog(_id, logSize, &logSize, (GLchar *)errorBuf);            \
     printf("ERROR COMPILING _source SHADER:\n%s\n", errorBuf);                 \
@@ -518,16 +582,26 @@ void *SIM_RenderInit(void *arg) {
   glGenFramebuffers(1, &g2FrameBuffer);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+  // Shader sources are written for GLSL 4.20; adapt them to the active GL flavour.
+  std::string g3VertexSrc = SIM::PrepareShaderSource(SIM::G3VertexShader);
+  std::string g3FragmentSrc = SIM::PrepareShaderSource(SIM::G3FragmentShader);
+  std::string g2VertexSrc = SIM::PrepareShaderSource(SIM::G2VertexShader);
+  std::string g2FragmentSrc = SIM::PrepareShaderSource(SIM::G2FragmentShader);
+  const char *g3VertexSrcPtr = g3VertexSrc.c_str();
+  const char *g3FragmentSrcPtr = g3FragmentSrc.c_str();
+  const char *g2VertexSrcPtr = g2VertexSrc.c_str();
+  const char *g2FragmentSrcPtr = g2FragmentSrc.c_str();
+
   // Setup G3 Shader Program
   g3shaderProgramID = glCreateProgram();
-  CompileVertexShader(myVertexShader, SIM::G3VertexShader);
-  CompileFragmentShader(myFragmentShader, SIM::G3FragmentShader);
+  CompileVertexShader(myVertexShader, g3VertexSrcPtr);
+  CompileFragmentShader(myFragmentShader, g3FragmentSrcPtr);
   LinkShader(g3shaderProgramID, myVertexShader, myFragmentShader);
 
   // Setup G2 Shader Program
   g2shaderProgramID = glCreateProgram();
-  CompileVertexShader(g2VertexShader, SIM::G2VertexShader);
-  CompileFragmentShader(g2FragmentShader, SIM::G2FragmentShader);
+  CompileVertexShader(g2VertexShader, g2VertexSrcPtr);
+  CompileFragmentShader(g2FragmentShader, g2FragmentSrcPtr);
   LinkShader(g2shaderProgramID, g2VertexShader, g2FragmentShader);
 
   GLint texUnitLoc = glGetUniformLocation(g2shaderProgramID, "myTexture");
@@ -550,6 +624,9 @@ void *SIM_RenderInit(void *arg) {
 
   // Setup ImGui
   SIM::GUI::Init(window, context);
+
+  // Secondary screen output (second display on Android, second window on PC)
+  SIM_Display_Init(window, context);
 
   clock_gettime(CLOCK_MONOTONIC, &s_SIM_lastFrameEnd);
 
@@ -898,7 +975,32 @@ static void HandleJoystickKeyDown(int aKey) {
     SIM::GUI::Toggle();
   }
 #endif
+#ifdef SDK_BUILD_ANDROID
+  else if (aKey == 8) {
+    // Right stick click on Android handhelds toggles GUI
+    SIM::GUI::Toggle();
+  }
+#endif
 }
+
+#ifdef SDK_BUILD_ANDROID
+// SDL reports a D-pad as hat motion on some Android controllers and as buttons 11-14
+// (SDL_CONTROLLER_BUTTON_DPAD_*) on others. Treat the buttons like the configured hat.
+static int TranslateAndroidDpadButton(int aKey) {
+  switch (aKey) {
+  case 11:
+    return s_SIM_config.padSettings.upJoyKey;
+  case 12:
+    return s_SIM_config.padSettings.downJoyKey;
+  case 13:
+    return s_SIM_config.padSettings.leftJoyKey;
+  case 14:
+    return s_SIM_config.padSettings.rightJoyKey;
+  default:
+    return aKey;
+  }
+}
+#endif
 
 static void HandleJoystickKeyUp(int aKey) {
   if (aKey == s_SIM_config.padSettings.aJoyKey) {
@@ -984,6 +1086,10 @@ void *SIM_Render(void *arg) {
 
     SDL_GetWindowSize(window, &windowWidth, &windowHeight);
 
+    // With a secondary output, the main window shows only the top screen (or the
+    // bottom one when swapped) and the other screen goes to the secondary output.
+    const bool dualScreen = SIM_Display_SecondaryActive();
+
     // Scale the viewport to the correct aspect ratio and center it
     switch (s_SIM_config.screenLayout) {
     default:
@@ -997,17 +1103,12 @@ void *SIM_Render(void *arg) {
       aspectRatio = 768.0f / 384.0f;
       break;
     }
-
-    viewWidth = windowWidth;
-    viewHeight = (int)((float)windowWidth / aspectRatio);
-    viewY = (windowHeight - viewHeight) / 2;
-    if (viewHeight > windowHeight) {
-      // Too tall to fit in the window. Scale down the width instead
-      viewHeight = windowHeight;
-      viewWidth = (int)((float)viewHeight * aspectRatio);
-      viewX = (windowWidth - viewWidth) / 2;
-      viewY = 0;
+    if (dualScreen) {
+      aspectRatio = 256.0f / 192.0f;
     }
+
+    FitViewport(windowWidth, windowHeight, aspectRatio, &viewX, &viewY,
+                &viewWidth, &viewHeight);
 
     glViewport(viewX, viewY, viewWidth, viewHeight);
 
@@ -1064,6 +1165,10 @@ void *SIM_Render(void *arg) {
     }
 
     while (SDL_PollEvent(&Event)) {
+      if (SIM_Display_ProcessEvent(&Event)) {
+        // Input/close event for the secondary output window
+        continue;
+      }
       SIM::GUI::ProcessEvent(&Event);
 
       if (Event.type == SDL_WINDOWEVENT) {
@@ -1179,10 +1284,18 @@ void *SIM_Render(void *arg) {
         }
       }
       if (Event.type == SDL_JOYBUTTONDOWN) {
+#ifdef SDK_BUILD_ANDROID
+        HandleJoystickKeyDown(TranslateAndroidDpadButton(Event.jbutton.button));
+#else
         HandleJoystickKeyDown(Event.jbutton.button);
+#endif
       }
       if (Event.type == SDL_JOYBUTTONUP) {
+#ifdef SDK_BUILD_ANDROID
+        HandleJoystickKeyUp(TranslateAndroidDpadButton(Event.jbutton.button));
+#else
         HandleJoystickKeyUp(Event.jbutton.button);
+#endif
       }
       if (Event.type == SDL_JOYHATMOTION) {
         if (Event.jhat.value == SDL_HAT_CENTERED) {
@@ -1248,18 +1361,54 @@ void *SIM_Render(void *arg) {
     }
     s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT;
 
-    SDL_GetMouseState(&x, &y);
-
-    // Convert touch coordinate to DS screen coordinates
-    if (x >= s_TouchPanelCoords[0] && x <= s_TouchPanelCoords[2] &&
-        y >= s_TouchPanelCoords[1] && y <= s_TouchPanelCoords[3]) {
-      s_tpData.x = (u16)map(x, s_TouchPanelCoords[0], s_TouchPanelCoords[2], 0,
-                            SIM_NDS_SCREEN_WIDTH);
-      s_tpData.y = (u16)map(y, s_TouchPanelCoords[1], s_TouchPanelCoords[3], 0,
-                            SIM_NDS_SCREEN_HEIGHT);
+    if (dualScreen) {
+      // The touch screen lives on the secondary output. Touches/clicks on the main
+      // window are ignored (they still reach the ImGui settings overlay).
+      int touchX;
+      int touchY;
+      BOOL touchDown = SIM_Display_GetSecondaryTouch(&touchX, &touchY);
+      const bool bottomOnSecondary = !s_SIM_config.swapScreens;
+      if (bottomOnSecondary && touchDown &&
+          touchX >= s_SecondaryTouchRect[0] && touchX < s_SecondaryTouchRect[2] &&
+          touchY >= s_SecondaryTouchRect[1] && touchY < s_SecondaryTouchRect[3]) {
+        s_tpData.x = (u16)map(touchX, s_SecondaryTouchRect[0],
+                              s_SecondaryTouchRect[2], 0, SIM_NDS_SCREEN_WIDTH);
+        s_tpData.y = (u16)map(touchY, s_SecondaryTouchRect[1],
+                              s_SecondaryTouchRect[3], 0, SIM_NDS_SCREEN_HEIGHT);
+        s_tpData.validity = 0;
+        s_tpData.touch = 1;
+      } else if (!bottomOnSecondary && isMouseDown) {
+        // Swapped: the bottom screen is on the main window, which is all touch panel
+        SDL_GetMouseState(&x, &y);
+        if (x >= viewX && x < viewX + viewWidth && y >= viewY &&
+            y < viewY + viewHeight) {
+          s_tpData.x = (u16)map(x, viewX, viewX + viewWidth, 0,
+                                SIM_NDS_SCREEN_WIDTH);
+          s_tpData.y = (u16)map(y, viewY, viewY + viewHeight, 0,
+                                SIM_NDS_SCREEN_HEIGHT);
+          s_tpData.validity = 0;
+          s_tpData.touch = 1;
+        } else {
+          s_tpData.touch = 0;
+        }
+      } else {
+        s_tpData.validity = 0;
+        s_tpData.touch = 0;
+      }
     } else {
-      s_tpData.validity = 0;
-      s_tpData.touch = 0;
+      SDL_GetMouseState(&x, &y);
+
+      // Convert touch coordinate to DS screen coordinates
+      if (x >= s_TouchPanelCoords[0] && x <= s_TouchPanelCoords[2] &&
+          y >= s_TouchPanelCoords[1] && y <= s_TouchPanelCoords[3]) {
+        s_tpData.x = (u16)map(x, s_TouchPanelCoords[0], s_TouchPanelCoords[2], 0,
+                              SIM_NDS_SCREEN_WIDTH);
+        s_tpData.y = (u16)map(y, s_TouchPanelCoords[1], s_TouchPanelCoords[3], 0,
+                              SIM_NDS_SCREEN_HEIGHT);
+      } else {
+        s_tpData.validity = 0;
+        s_tpData.touch = 0;
+      }
     }
 
     SIM::GUI::NewFrame();
@@ -1284,11 +1433,71 @@ void *SIM_Render(void *arg) {
     memset(bg3stex, 0,
            sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
 
-    // Draw MAIN engine
-    DrawEngine(FALSE);
+    if (dualScreen) {
+      // Both outputs must be drawn before the VBlank handlers below change VRAM,
+      // registers and OAM for the next frame.
+      //
+      // POWCNT bit 15 picks which 2D engine drives the top LCD.
+      const BOOL topIsSub = (s_reg_GX_POWCNT >> 15) ? FALSE : TRUE;
+      const bool swapped = s_SIM_config.swapScreens;
 
-    // SUB engine
-    DrawEngine(TRUE);
+      // Secondary output first: everything drawn into the main window must happen
+      // after switching back to it, since a drawable switch may not keep its back
+      // buffer intact on every driver.
+      int secondaryWidth;
+      int secondaryHeight;
+      if (SIM_Display_BeginSecondary(&secondaryWidth, &secondaryHeight)) {
+        int secX, secY, secW, secH;
+        FitViewport(secondaryWidth, secondaryHeight, 256.0f / 192.0f, &secX,
+                    &secY, &secW, &secH);
+
+        glViewport(0, 0, secondaryWidth, secondaryHeight);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glViewport(secX, secY, secW, secH);
+
+        // GL's origin is bottom-left, touch coordinates are top-left
+        s_SecondaryTouchRect[0] = secX;
+        s_SecondaryTouchRect[1] = secondaryHeight - (secY + secH);
+        s_SecondaryTouchRect[2] = secX + secW;
+        s_SecondaryTouchRect[3] = secondaryHeight - secY;
+
+        s_SingleScreenQuad = swapped ? SINGLE_SCREEN_TOP : SINGLE_SCREEN_BOTTOM;
+        DrawEngine(swapped ? topIsSub : !topIsSub);
+        SIM_Display_EndSecondary();
+      }
+
+      // Main window: the top screen (bottom screen when swapped)
+      glViewport(0, 0, windowWidth, windowHeight);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glViewport(viewX, viewY, viewWidth, viewHeight);
+      s_SingleScreenQuad = swapped ? SINGLE_SCREEN_BOTTOM : SINGLE_SCREEN_TOP;
+      DrawEngine(swapped ? !topIsSub : topIsSub);
+
+      s_SingleScreenQuad = SINGLE_SCREEN_NONE;
+      s_WasDualScreen = true;
+    } else {
+      if (s_WasDualScreen) {
+        // Secondary output was just turned off: blank it instead of freezing a frame
+        int secondaryWidth;
+        int secondaryHeight;
+        if (SIM_Display_BeginSecondary(&secondaryWidth, &secondaryHeight)) {
+          glViewport(0, 0, secondaryWidth, secondaryHeight);
+          glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+          glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+          SIM_Display_EndSecondary();
+          glViewport(viewX, viewY, viewWidth, viewHeight);
+        }
+        s_WasDualScreen = false;
+      }
+
+      // Draw MAIN engine
+      DrawEngine(FALSE);
+
+      // SUB engine
+      DrawEngine(TRUE);
+    }
 
     // Run HBlank Interrupt
     OS_IRQTable[OS_IE_H_BLANK - 1]();
@@ -1422,6 +1631,11 @@ int main(int argc, char *argv[]) {
 #ifdef SDK_BUILD_NX
   // Start up libnx sockets
   socketInitializeDefault();
+#endif
+
+#ifdef SDK_BUILD_ANDROID
+  // Logging to logcat, SDL hints, and chdir into the app's files directory
+  SIM_Android_Init();
 #endif
 
 #ifdef TRACY_ENABLE

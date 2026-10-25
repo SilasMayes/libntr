@@ -16,6 +16,7 @@ static ImGuiContext * sImguiContext;
 static bool sEnabled = false;
 static bool sPauseGameLogic = false;
 static constexpr ImVec2 sButtonSize = {100, 20};
+static float sUiScale = 1.0f;
 
 static bool sShowAppConfig = false;
 static bool sShowAppPad = false;
@@ -49,10 +50,28 @@ void Init(SDL_Window * window, SDL_GLContext context) {
 
 
 	ImGui_ImplSDL2_InitForOpenGL(sWindow, sContext);
+#ifdef SIM_GLES
+	const char * glsl_version = "#version 300 es";
+#else
 	const char * glsl_version = "#version 420";
+#endif
   	ImGui_ImplOpenGL3_Init(glsl_version);
 
     ImGui::StyleColorsDark(NULL);
+
+#ifdef SDK_BUILD_ANDROID
+    // Phone/handheld panels are dense: scale the settings GUI so it can be used by touch
+    int windowWidth = 0;
+    int windowHeight = 0;
+    SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+    float uiScale = (float)windowHeight / 540.0f;
+    if (uiScale < 1.0f) {
+        uiScale = 1.0f;
+    }
+    ImGui::GetStyle().ScaleAllSizes(uiScale);
+    ImGui::GetIO().FontGlobalScale = uiScale;
+    sUiScale = uiScale;
+#endif
 
     //ImFontAtlas::ImFontAtlas_AddFontDefault
     //ioptr->Fonts.AddFontDefault(NULL);
@@ -141,7 +160,7 @@ bool IsGameLogicPaused() {
 
 // Generic button to open another GUI applet
 void AppButton(const char * label, bool * state, void (*initFunc)(void), void (*appFunc)(bool *)) {
-    if(ImGui::Button(label, sButtonSize)) {
+    if(ImGui::Button(label, ImVec2(sButtonSize.x * sUiScale, sButtonSize.y * sUiScale))) {
         if(*state) {
             *state = false;
         } else {

@@ -59,6 +59,7 @@ typedef struct {
     u8 masterVolume; /* Master sound volume (0-127) */
     SIM_config_screen_layout_type screenLayout; /* DS screen layout */
     BOOL swapScreens; /* Swap screen positions */
+    BOOL secondaryScreen; /* Show the bottom screen on a second display (Android) or window (PC) when one is available */
     u8 vsyncInterval; /* Vertical sync interval. Set to 0 to disable vsync, 1 every vblank, 2 every second vblank etc*/
     u8 capFrameRate; /* Should the frame rate be capped to 60 fps? */
     u8 macAddr[6]; /* MAC address */

@@ -10,6 +10,8 @@ extern "C" {
 
 G3SIM_Vertex_t * sim_GetScreenQuadArray(SIM_config_screen_layout_type layout, BOOL isSwapped);
 int sim_GetScreenQuadVertexCount(SIM_config_screen_layout_type layout, BOOL isSwapped);
+G3SIM_Vertex_t * sim_GetSingleScreenQuadArray(BOOL bottomScreen);
+int sim_GetSingleScreenQuadVertexCount(void);
 
 #ifdef __cplusplus
 }
