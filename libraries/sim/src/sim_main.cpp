@@ -1,18 +1,14 @@
 extern "C" void NitroMain();
 extern "C" int NitroSpMain(void *arg);
 #define SDL_MAIN_HANDLED
-#define _POSIX_C_SOURCE 199309L
 
 #include <string>
+#define _POSIX_C_SOURCE 199309L
 #include <pthread.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_events.h>
 
-#ifdef SDK_BUILD_NX
-#include <glad/glad.h>
-#else
-#include <simulator/glad/glad.h>
-#endif
+#include <simulator/sim_opengl.h>
 #include <simulator/sim.h>
 #include <simulator/sim_audio.h>
 #include <simulator/sim_net.h>
@@ -385,7 +381,10 @@ void *SIM_RenderInit(void *arg) {
     SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
   }
 
+  #ifndef SDK_BUILD_PROSPERO
+  //OpenGL is static linked on PS5
   gladLoadGLLoader(SDL_GL_GetProcAddress);
+  #endif
 
   glViewport(0, 0, windowWidth, windowHeight);
 
