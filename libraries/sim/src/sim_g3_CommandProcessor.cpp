@@ -587,7 +587,7 @@ void HandleCommandMessage(draw_msg_t *msg) {
       u8 paramSize;
       u8 paramSigned;
       while (curOffset < msg->size) {
-        paramPtr = (void *)cmdBlockPtr + 4;
+        paramPtr = (void *)((uPtr)cmdBlockPtr + 4);
         curOffset += 4;
         for (int i = 0; i < 4; i++) {
           tempMsg.type = DecodeG3Op(cmdBlockPtr->ops[i]);
@@ -629,7 +629,7 @@ void HandleCommandMessage(draw_msg_t *msg) {
             default:
               break;
             }
-            paramPtr += paramSize;
+            paramPtr = (void*)((uPtr)paramPtr + paramSize);
             curOffset += paramSize;
           }
 

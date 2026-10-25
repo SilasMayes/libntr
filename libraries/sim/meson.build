@@ -9,17 +9,24 @@ if(build_target == 'linux' or build_target == 'win64')
 sdl2_lib = meson.get_compiler('c').find_library('SDL2')
 elif(build_target == 'nx')
 sdl2_lib = meson.get_compiler('c').find_library('SDL2', dirs: '/opt/devkitpro/portlibs/switch/lib/')
+elif(build_target == 'prospero')
+sdl2_lib = meson.get_compiler('c').find_library('SDL2', dirs: prospero_lib_dirs)
 endif
 sdl2_dep = declare_dependency(dependencies: [sdl2_lib])
 
 if(build_target == 'linux' or build_target == 'win64')
 enet_lib = meson.get_compiler('c').find_library('enet')
+enet_dep = declare_dependency(dependencies: [enet_lib])
 elif(build_target == 'nx')
 enet_lib = meson.get_compiler('c').find_library('enet', dirs: '/opt/devkitpro/portlibs/switch/lib/')
-endif
 enet_dep = declare_dependency(dependencies: [enet_lib])
+endif
 
-libsim_dependencies = [sdl2_dep, enet_dep]
+
+libsim_dependencies = [sdl2_dep]
+if(build_target == 'linux' or build_target == 'win64' or build_target == 'nx')
+    libsim_dependencies += enet_dep
+endif
 libsim_args = [ ]
 
 if(build_target == 'win64')
