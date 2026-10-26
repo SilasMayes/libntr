@@ -13,6 +13,29 @@
 
 #define SIM_CONFIG_FILE_PATH "./sim_config.ini"
 
+// The firmware strings are UTF-16 (u16). wchar_t is 4 bytes on Linux/Android, so the
+// wide-string functions can't be used on them.
+static u8 SetFirmwareString(u16 *dst, int maxLen, const char *ascii)
+{
+    memset(dst, 0, maxLen * sizeof(u16));
+    int len = 0;
+    while (ascii[len] != '\0' && len < maxLen) {
+        dst[len] = (u8)ascii[len];
+        len++;
+    }
+    return (u8)len;
+}
+
+static const char *FirmwareStringToAscii(const u16 *src, int maxLen, char *out)
+{
+    int i = 0;
+    for (; i < maxLen && src[i] != 0; i++) {
+        out[i] = src[i] < 0x80 ? (char)src[i] : '?';
+    }
+    out[i] = '\0';
+    return out;
+}
+
 static int IniHandler(void* user, const char* section, const char* name,
                    const char* value);
 static const char * BoolToString(BOOL arg);
@@ -171,19 +194,12 @@ static int IniHandler(void* user, const char* section, const char* name,
         config->osNvramConfig.ncd.owner.birthday.day = atoi(value);
     }
     if(MATCH("OSNVRAM", "Owner_Nickname")) {
-        memset(config->osNvramConfig.ncd.owner.nickname.str, 0, NVRAM_CONFIG_NICKNAME_LENGTH*2);
-
-        int valueLen = strlen(value);
-        for(int i=0; i < valueLen; i++) {
-            u16 outChar = value[i];
-            config->osNvramConfig.ncd.owner.nickname.str[i] = outChar;
-        }
-        config->osNvramConfig.ncd.owner.nickname.length = (u8)wcslen((wchar_t*)config->osNvramConfig.ncd.owner.nickname.str);
+        config->osNvramConfig.ncd.owner.nickname.length = SetFirmwareString(
+            config->osNvramConfig.ncd.owner.nickname.str, NVRAM_CONFIG_NICKNAME_LENGTH, value);
     }
     if(MATCH("OSNVRAM", "Owner_Comment")) {
-        memset(config->osNvramConfig.ncd.owner.comment.str, 0, NVRAM_CONFIG_COMMENT_LENGTH*2);
-        swprintf((wchar_t*)config->osNvramConfig.ncd.owner.comment.str, (NVRAM_CONFIG_COMMENT_LENGTH)-1, L"%s", value);
-        config->osNvramConfig.ncd.owner.comment.length = wcslen((wchar_t*)config->osNvramConfig.ncd.owner.comment.str);
+        config->osNvramConfig.ncd.owner.comment.length = SetFirmwareString(
+            config->osNvramConfig.ncd.owner.comment.str, NVRAM_CONFIG_COMMENT_LENGTH, value);
     }
     //Alarm
     if(MATCH("OSNVRAM", "Alarm_Hour")) {
@@ -428,7 +444,8 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->macAddr[5] = rand();
 
     memset(&aConfig->osNvramConfig, 0, sizeof(NVRAMConfig));
-    wcscpy((wchar_t*)aConfig->osNvramConfig.ncd.owner.nickname.str, L"Player");
+    aConfig->osNvramConfig.ncd.owner.nickname.length = SetFirmwareString(
+        aConfig->osNvramConfig.ncd.owner.nickname.str, NVRAM_CONFIG_NICKNAME_LENGTH, "Player");
     aConfig->osNvramConfig.ncd.option.input_nickname = TRUE;
     aConfig->osNvramConfig.ncd.option.input_favoriteColor = TRUE;
     aConfig->osNvramConfig.ncd.option.input_language = TRUE;
@@ -500,8 +517,11 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "Owner_FavoriteColor=%d\n", aConfig->osNvramConfig.ncd.owner.favoriteColor);
     fprintf(configFile, "Owner_BirthdayMonth=%d\n", aConfig->osNvramConfig.ncd.owner.birthday.month);
     fprintf(configFile, "Owner_BirthdayDay=%d\n", aConfig->osNvramConfig.ncd.owner.birthday.day);
-    fprintf(configFile, "Owner_Nickname=%ls\n", aConfig->osNvramConfig.ncd.owner.nickname.str);
-    fprintf(configFile, "Owner_Comment=%ls\n", aConfig->osNvramConfig.ncd.owner.comment.str);
+    {
+        char text[NVRAM_CONFIG_COMMENT_LENGTH + 1];
+        fprintf(configFile, "Owner_Nickname=%s\n", FirmwareStringToAscii(aConfig->osNvramConfig.ncd.owner.nickname.str, NVRAM_CONFIG_NICKNAME_LENGTH, text));
+        fprintf(configFile, "Owner_Comment=%s\n", FirmwareStringToAscii(aConfig->osNvramConfig.ncd.owner.comment.str, NVRAM_CONFIG_COMMENT_LENGTH, text));
+    }
     fprintf(configFile, "Alarm_Hour=%d\n", aConfig->osNvramConfig.ncd.alarm.hour);
     fprintf(configFile, "Alarm_Minute=%d\n", aConfig->osNvramConfig.ncd.alarm.minute);
     fprintf(configFile, "Alarm_Second=%d\n", aConfig->osNvramConfig.ncd.alarm.second);
