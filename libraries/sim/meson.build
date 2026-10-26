@@ -5,6 +5,11 @@ libsim_includes = include_directories('include')
 sdl2_lib = library('SDL2')
 enet_lib = library('enet')
 
+# Projects that use libntr's native tools (makelcf) also configure libntr for the build
+# machine. Only the instance compiled by the NDK needs the Android libraries.
+android_toolchain = (build_target == 'android' and
+                     meson.get_compiler('c').get_define('__ANDROID__') != '')
+
 if(build_target == 'linux' or build_target == 'win64')
 sdl2_lib = meson.get_compiler('c').find_library('SDL2')
 elif(build_target == 'nx')
@@ -13,7 +18,7 @@ elif(build_target == 'prospero')
 sdl2_lib = meson.get_compiler('c').find_library('SDL2', dirs: prospero_lib_dirs)
 elif(build_target == 'android')
 # SDL2 is built by the Android CI (or the developer) and found through the cross file's -L paths
-sdl2_lib = meson.get_compiler('c').find_library('SDL2')
+sdl2_lib = meson.get_compiler('c').find_library('SDL2', required: android_toolchain)
 endif
 sdl2_dep = declare_dependency(dependencies: [sdl2_lib])
 
@@ -24,7 +29,8 @@ elif(build_target == 'nx')
 enet_lib = meson.get_compiler('c').find_library('enet', dirs: '/opt/devkitpro/portlibs/switch/lib/')
 enet_dep = declare_dependency(dependencies: [enet_lib])
 elif(build_target == 'android')
-enet_lib = meson.get_compiler('c').find_library('enet', static: true)
+# Found through the cross file's -L path (tools/android/build_apk.sh builds a static libenet.a)
+enet_lib = meson.get_compiler('c').find_library('enet', required: android_toolchain)
 enet_dep = declare_dependency(dependencies: [enet_lib])
 endif
 
@@ -36,14 +42,14 @@ endif
 
 # OpenGL ES 3.2 renderer (always used on Android, optional on desktop Linux for testing)
 use_gles = get_option('gles') or build_target == 'android'
-if(build_target == 'android')
+if(android_toolchain)
     libsim_dependencies += [
         meson.get_compiler('c').find_library('GLESv3'),
         meson.get_compiler('c').find_library('EGL'),
         meson.get_compiler('c').find_library('android'),
         meson.get_compiler('c').find_library('log'),
     ]
-elif(use_gles)
+elif(use_gles and build_target != 'android')
     libsim_dependencies += meson.get_compiler('c').find_library('GLESv2')
 endif
 

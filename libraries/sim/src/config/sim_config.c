@@ -356,7 +356,12 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->windowWidth = 0;
 #endif
     aConfig->fullScreen = FALSE;
+#ifdef SDK_BUILD_ANDROID
+    // Landscape phones: side by side fits best when there is no second display
+    aConfig->screenLayout = SIM_CONFIG_SCREEN_LAYOUT_HORIZONTAL;
+#else
     aConfig->screenLayout = SIM_CONFIG_SCREEN_LAYOUT_VERTICAL;
+#endif
     aConfig->swapScreens = FALSE;
 #ifdef SDK_BUILD_ANDROID
     aConfig->secondaryScreen = TRUE;
