@@ -126,9 +126,19 @@ static void OSi_SendToPxi (u16 data)
 #define RESET_HW_DTCM_IRQ_STACK_END SDK_AUTOLOAD_DTCM_START + 0x00003fc0 - HW_SVC_STACK_SIZE
 #endif /* SDK_VERSION_MAJOR */
 
+#ifdef SDK_PORT
+    // sim_carts.h: there's no cartridge to boot again; the app restarts instead
+    extern void SIM_Carts_SoftReset(void) __attribute__((weak));
+#endif
+
 #if (defined(SDK_ARM9) || defined(SDK_PORT))
     void OS_ResetSystem (u32 parameter)
     {
+#ifdef SDK_PORT
+        if (SIM_Carts_SoftReset != NULL) {
+            SIM_Carts_SoftReset();
+        }
+#endif
 #ifdef SDK_TWL
   if ((MB_IsMultiBootChild() == TRUE) ||
       ((OS_IsRunOnTwl() == TRUE) &&

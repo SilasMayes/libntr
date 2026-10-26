@@ -10,6 +10,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 extern "C" void __attribute__((weak)) SIM_Prj_UIFont(const void **regular, int *regularSize, const void **bold,
                                                       int *boldSize) {
@@ -66,12 +67,19 @@ bool Hovered() {
   return ImGui::IsItemHovered() && ImGui::GetIO().MouseSource != ImGuiMouseSource_TouchScreen;
 }
 
+// Labels follow Dear ImGui's convention: what follows "##" isn't shown (and "###id" keeps
+// the ID when the text changes)
+const char *TextEnd(const char *text) {
+  const char *hidden = strstr(text, "##");
+  return hidden != nullptr ? hidden : text + strlen(text);
+}
+
 ImVec2 Measure(ImFont *font, float px, const char *text, float wrap = 0.0f) {
-  return font->CalcTextSizeA(px, FLT_MAX, wrap, text);
+  return font->CalcTextSizeA(px, FLT_MAX, wrap, text, TextEnd(text));
 }
 
 void Text(ImDrawList *draw, ImFont *font, float px, ImVec2 pos, ImU32 color, const char *text, float wrap = 0.0f) {
-  draw->AddText(font, px, ImVec2(std::floor(pos.x), std::floor(pos.y)), color, text, nullptr, wrap);
+  draw->AddText(font, px, ImVec2(std::floor(pos.x), std::floor(pos.y)), color, text, TextEnd(text), wrap);
 }
 
 ImU32 RowColor(bool held, bool hovered) {

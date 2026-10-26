@@ -48,7 +48,14 @@ void SIM_Carts_Add(void (*done)(BOOL ok, const char *id));
 // the game save first (SIM_LIFECYCLE_QUIT)
 void SIM_Carts_SwitchTo(const char *id);
 
+// A soft reset (the DS's L+R+Start+Select, OS_ResetSystem): restarts the app into the
+// game being played, without saving and without the picker. The new process then sees
+// SIM_Carts_StartedBySoftReset() == TRUE.
+void SIM_Carts_SoftReset(void);
+BOOL SIM_Carts_StartedBySoftReset(void);
+
 // libntr internals
+void SIM_Carts_SetArgs(int argc, char **argv); // main()'s, for restarting on desktop
 void SIM_Carts_Init(void);      // first thing in main(): remembers the data directory
 void SIM_Carts_Choose(void);    // once the window exists: picker, then enter the game's directory
 BOOL SIM_Carts_PickerActive(void);

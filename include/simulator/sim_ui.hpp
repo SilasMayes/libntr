@@ -8,6 +8,9 @@
 //
 // A screen is one full-window ImGui window (BeginWindow) holding one or more panes
 // (BeginPane): a title bar over a scrolling column the widgets go in.
+//
+// Labels are also the widgets' IDs, with Dear ImGui's convention: "Text##x" shows "Text",
+// and "Text###x" keeps its ID (and the pad's cursor) when the text changes.
 
 #include "simulator/imgui/imgui.hpp"
 

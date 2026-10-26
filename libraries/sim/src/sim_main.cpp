@@ -1800,6 +1800,7 @@ int main(int argc, char *argv[]) {
   //chdir(SDL_GetBasePath());
 
   // The data directory: settings, and the games' directories (sim_carts.h)
+  SIM_Carts_SetArgs(argc, argv);
   SIM_Carts_Init();
 
   // Start up debug system

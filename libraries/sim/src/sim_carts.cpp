@@ -38,6 +38,10 @@ int sSelection = 0;
 SIM_Cart sCurrent;
 
 bool sSkipPickerOnce = false; // switching games: go straight into the chosen one
+bool sSoftReset = false;      // this process was started by a soft reset
+bool sSoftResetNext = false;  // the next one will be
+int sArgc = 0;
+char **sArgv = nullptr;
 
 constexpr const char *kStateFile = "carts.ini";
 constexpr const char *kNameFile = "cart.name";
@@ -57,6 +61,8 @@ void LoadState() {
       sAskAtLaunch = atoi(line + 12) != 0;
     } else if (strncmp(line, "SkipPickerOnce=", 15) == 0) {
       sSkipPickerOnce = atoi(line + 15) != 0;
+    } else if (strncmp(line, "SoftReset=", 10) == 0) {
+      sSoftReset = atoi(line + 10) != 0;
     }
   }
   fclose(file);
@@ -67,9 +73,29 @@ void SaveState() {
   if (file == nullptr) {
     return;
   }
-  fprintf(file, "[Carts]\nCurrent=%s\nAskAtLaunch=%d\nSkipPickerOnce=%d\n", sCurrentId.c_str(), sAskAtLaunch ? 1 : 0,
-          sSkipPickerOnce ? 1 : 0);
+  fprintf(file, "[Carts]\nCurrent=%s\nAskAtLaunch=%d\nSkipPickerOnce=%d\nSoftReset=%d\n", sCurrentId.c_str(),
+          sAskAtLaunch ? 1 : 0, sSkipPickerOnce ? 1 : 0, sSoftResetNext ? 1 : 0);
   fclose(file);
+}
+
+// Starts the app again (Android: a new process through the activity; desktop: exec)
+[[noreturn]] void RestartProcess() {
+#ifdef SDK_BUILD_ANDROID
+  SIM_Android_RestartApp();
+#elif defined(__linux__) || defined(__APPLE__)
+  if (sArgv != nullptr && chdir(sBaseDir.c_str()) == 0) {
+    fflush(stdout);
+    fflush(stderr);
+    char self[4096];
+    ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (length > 0) {
+      self[length] = '\0';
+      execv(self, sArgv);
+    }
+    execv(sArgv[0], sArgv);
+  }
+#endif
+  exit(0);
 }
 
 void EnterCart(const std::string &id) {
@@ -284,12 +310,34 @@ extern "C" const char *SIM_SettingsPath(const char *fileName) {
   return path.c_str();
 }
 
+extern "C" void SIM_Carts_SetArgs(int argc, char **argv) {
+  sArgc = argc;
+  sArgv = argv;
+}
+
 extern "C" void SIM_Carts_Init(void) {
   char cwd[1024];
   if (getcwd(cwd, sizeof(cwd)) != nullptr) {
     sBaseDir = cwd;
   }
   LoadState();
+  if (sSoftReset) {
+    // Only this start
+    SaveState();
+    printf("Started by a soft reset\n");
+  }
+}
+
+extern "C" BOOL SIM_Carts_StartedBySoftReset(void) {
+  return sSoftReset ? TRUE : FALSE;
+}
+
+extern "C" void SIM_Carts_SoftReset(void) {
+  printf("Soft reset\n");
+  sSkipPickerOnce = true;
+  sSoftResetNext = true;
+  SaveState();
+  RestartProcess();
 }
 
 extern "C" int SIM_Carts_List(SIM_Cart carts[SIM_CARTS_MAX]) {
@@ -367,11 +415,7 @@ extern "C" void SIM_Carts_SwitchTo(const char *id) {
   SaveState();
   // Let the game save, as when the app is closed
   SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_QUIT);
-#ifdef SDK_BUILD_ANDROID
-  SIM_Android_RestartApp();
-#else
-  exit(0);
-#endif
+  RestartProcess();
 }
 
 extern "C" void SIM_Carts_Choose(void) {
