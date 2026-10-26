@@ -38,6 +38,7 @@ extern "C" int NitroSpMain(void *arg);
 #include <simulator/sim_display.h>
 #include <simulator/sim_lifecycle.h>
 #include <simulator/sim_companion.h>
+#include <simulator/sim_carts.h>
 #ifdef SDK_BUILD_ANDROID
 #include <simulator/sim_android.h>
 #endif
@@ -1793,6 +1794,9 @@ int main(int argc, char *argv[]) {
   // TODO: This broke the linux AppImage build
   //chdir(SDL_GetBasePath());
 
+  // The data directory: settings, and the games' directories (sim_carts.h)
+  SIM_Carts_Init();
+
   // Start up debug system
   SIM_Dbg_Init();
 
@@ -1904,6 +1908,21 @@ int main(int argc, char *argv[]) {
 
   SIM_RenderInit(NULL);
   G3SIM_DrawInit();
+
+  // Which game to run (a picker when there are several), then enter its directory and
+  // load its ROM header
+  SIM_Carts_Choose();
+  romFile = fopen("header.bin", "r");
+  if (romFile != NULL) {
+    fread((void *)HW_ROM_HEADER_BUF, 1, 0x160, romFile);
+    fclose(romFile);
+#ifdef LIBNTR_CARD_GAME_CODE
+    strncpy((char *)&cardHeader->game_code, LIBNTR_CARD_GAME_CODE, sizeof(u32));
+#endif
+#ifdef LIBNTR_CARD_MAKER_CODE
+    strncpy((char *)&cardHeader->maker_code, LIBNTR_CARD_MAKER_CODE, sizeof(u16));
+#endif
+  }
 
 // Init Sockets (only needed on windows)
 #ifdef SDK_BUILD_WIN64

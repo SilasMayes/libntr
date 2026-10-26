@@ -10,8 +10,9 @@
 #include <SDL2/SDL.h>
 
 #include <stdlib.h>
+#include <simulator/sim_carts.h>
 
-#define SIM_CONFIG_FILE_PATH "./sim_config.ini"
+#define SIM_CONFIG_FILE_PATH SIM_SettingsPath("sim_config.ini") // shared by every game (sim_carts.h)
 
 // The firmware strings are UTF-16 (u16). wchar_t is 4 bytes on Linux/Android, so the
 // wide-string functions can't be used on them.

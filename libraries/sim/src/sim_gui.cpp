@@ -1,6 +1,7 @@
 #include "simulator/sim.h"
 #include "simulator/sim_gui.hpp"
 #include "simulator/sim_files.h"
+#include "simulator/sim_carts.h"
 
 #include "simulator/imgui/imgui.hpp"
 
@@ -47,6 +48,8 @@ void Init(SDL_Window * window, SDL_GLContext context) {
     sContext = context;
 
     sImguiContext = ImGui::CreateContext(NULL);
+    static std::string sIniPath = SIM_SettingsPath("imgui.ini");
+    ImGui::GetIO().IniFilename = sIniPath.c_str();
 
     ImGuiIO igIO = ImGui::GetIO();
 	igIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;       // Enable Keyboard Controls
@@ -84,6 +87,10 @@ void Init(SDL_Window * window, SDL_GLContext context) {
 }
 
 void Main() {
+    SIM_Carts_DrawPicker();
+    if (SIM_Carts_PickerActive()) {
+        return;
+    }
     PrjOverlay();
     SIM_Files_Update();
 
@@ -146,7 +153,7 @@ void NewFrame() {
 }
 
 void ProcessEvent(SDL_Event * event) {
-    if(sEnabled) {
+    if(sEnabled || SIM_Carts_PickerActive()) {
         ImGui_ImplSDL2_ProcessEvent(event);
     }
 }

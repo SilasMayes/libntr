@@ -1,3 +1,4 @@
+#include <simulator/sim_carts.h>
 
 #include    <nitro_sp.h>
 #ifdef SDK_PORT
@@ -14,7 +15,7 @@
 #include <stdio.h>
 
 static FILE * s_nvramFilePtr = NULL;
-#define NVRAM_FILE_PATH "firmware.bin"
+#define NVRAM_FILE_PATH SIM_SettingsPath("firmware.bin") // shared by every game (sim_carts.h)
 #endif
 
 void NVRAM_WriteEnable(void)

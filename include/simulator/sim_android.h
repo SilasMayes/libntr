@@ -19,6 +19,9 @@ void SIM_Android_RequestRomImport(void);
 // -1 if the player backed out.
 int SIM_Android_PollRomImport(char *pathOut, size_t pathOutSize);
 
+// Restarts the app (a fresh process): used to switch to another game
+void SIM_Android_RestartApp(void);
+
 #ifdef __cplusplus
 }
 #endif

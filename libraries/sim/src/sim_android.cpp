@@ -119,6 +119,25 @@ extern "C" void SIM_Android_RequestRomImport(void) {
   env->DeleteLocalRef(activity);
 }
 
+extern "C" void SIM_Android_RestartApp(void) {
+  JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+  jobject activity = (jobject)SDL_AndroidGetActivity();
+  if (env != nullptr && activity != nullptr) {
+    jclass activityClass = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(activityClass, "restartApp", "()V");
+    if (method != nullptr) {
+      env->CallVoidMethod(activity, method);
+    } else {
+      env->ExceptionClear();
+    }
+    env->DeleteLocalRef(activityClass);
+    env->DeleteLocalRef(activity);
+  }
+  // restartApp ends this process; if it couldn't, quit at least
+  SDL_Delay(2000);
+  exit(0);
+}
+
 extern "C" int SIM_Android_PollRomImport(char *pathOut, size_t pathOutSize) {
   switch (sImportState.load()) {
   case IMPORT_DONE: {

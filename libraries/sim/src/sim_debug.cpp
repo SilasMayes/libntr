@@ -1,3 +1,4 @@
+#include <simulator/sim_carts.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
@@ -7,7 +8,7 @@
 #define NANO 1000000000L
 #define MILLI_TO_NANO 1000000L
 
-static const char * DebugPrintFilePath = "DbgLog.txt";
+#define DebugPrintFilePath SIM_SettingsPath("DbgLog.txt")
 static const char * s_profileStartFile = "";
 static int s_profileStartLine;
 

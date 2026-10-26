@@ -3,6 +3,7 @@
 #include <fstream>
 
 #include "common.h"
+#include "nds-extract.hpp"
 
 namespace fs = std::filesystem;
 
@@ -171,8 +172,12 @@ void dumpFntTree(const NitroROM& rom, const NDSDirectory& dir, const fs::path& p
 
 
 int SIM_NDSExtract(std::string ndsFilePath){
+	return SIM_NDSExtractTo(ndsFilePath, fs::current_path().string());
+}
+
+int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 	fs::path ndsInputPath(ndsFilePath);
-	fs::path fsOutputPath = fs::current_path();
+	fs::path fsOutputPath = outputDir;
 	
 	fs::path ov9Path = fsOutputPath.string() + Separator +"overlay9";
 	fs::path ov7Path = fsOutputPath.string() + Separator + "overlay7";
