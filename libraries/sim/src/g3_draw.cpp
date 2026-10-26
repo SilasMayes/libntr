@@ -3,6 +3,7 @@
 #include <simulator/g3_handler.h>
 #include <simulator/assert.h>
 #include <string.h>
+#include <time.h>
 #include <stddef.h>
 #include <memory>
 
@@ -116,6 +117,41 @@ static void* getTexPlttVramBank()
 	return vramBank;
 }
 
+// Vertex data is uploaded once per draw batch, hundreds of times a frame. Rewriting the
+// same buffer in place makes tiled mobile GPUs wait for (or copy) the previous batch
+// still using it; giving the buffer new storage each time ("orphaning") never stalls.
+static void G3SIM_UploadVerts(const G3SIM_Vertex_t *verts, int count)
+{
+	glBufferData(GL_ARRAY_BUFFER, sizeof(G3SIM_Vertex_t) * count, verts, GL_STREAM_DRAW);
+}
+
+// Uniform locations never change once the shader is linked; looking them up by name for
+// every draw is pure overhead.
+static GLint G3SIM_Uniform(const char *name)
+{
+	struct CachedUniform { const char *name; GLint location; };
+	static CachedUniform sCache[16];
+	static int sCount = 0;
+	static GLuint sProgram = 0;
+
+	if (sProgram != g3shaderProgramID) {
+		sProgram = g3shaderProgramID;
+		sCount = 0;
+	}
+	for (int i = 0; i < sCount; i++) {
+		if (sCache[i].name == name || strcmp(sCache[i].name, name) == 0) {
+			return sCache[i].location;
+		}
+	}
+	GLint location = glGetUniformLocation(g3shaderProgramID, name);
+	if (sCount < (int)(sizeof(sCache) / sizeof(sCache[0]))) {
+		sCache[sCount].name = name;
+		sCache[sCount].location = location;
+		sCount++;
+	}
+	return location;
+}
+
 void G3SIM_AddVtx(G3SIM_Vertex_t * vtx)
 {
 	memcpy(&s_G3DrawVerts[s_G3DrawCurVertIdx], vtx, sizeof(G3SIM_Vertex_t));
@@ -126,13 +162,29 @@ void G3SIM_AddVtx(G3SIM_Vertex_t * vtx)
 	return;
 }
 
+static u64 sG3SubmitNs = 0;
+
+static u64 G3SIM_NowNs()
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (u64)now.tv_sec * 1000000000ull + (u64)now.tv_nsec;
+}
+
+u64 G3SIM_TakeSubmitNs()
+{
+	u64 ns = sG3SubmitNs;
+	sG3SubmitNs = 0;
+	return ns;
+}
+
 void G3SIM_DrawArray()
 {
 	if( s_G3DrawCurVertIdx != 0 )
 	{
 		glBindVertexArray(s_G3DrawVertexArray);
 		glBindBuffer(GL_ARRAY_BUFFER, s_G3DrawVertexBuffer);
-		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(G3SIM_Vertex_t) * s_G3DrawCurVertIdx, s_G3DrawVerts);
+		G3SIM_UploadVerts(s_G3DrawVerts, s_G3DrawCurVertIdx);
 		glDrawArrays(GL_TRIANGLES,0,s_G3DrawCurVertIdx);
 	}
 	return;
@@ -167,12 +219,21 @@ void G3SIM_DrawInit()
 	glDisableVertexAttribArray(2);
 }
 
+static void G3SIM_FlushArrayInner();
+
 void G3SIM_FlushArray()
 {
 	if(s_G3DrawCurVertIdx == 0) {
 		// No verts to draw
 		return;
 	}
+	u64 start = G3SIM_NowNs();
+	G3SIM_FlushArrayInner();
+	sG3SubmitNs += G3SIM_NowNs() - start;
+}
+
+static void G3SIM_FlushArrayInner()
+{
 
 	#ifdef SDK_TRACY_ENABLE
 	TracyCZone(FlushArrayZone, 1);
@@ -268,25 +329,25 @@ void G3SIM_FlushArray()
 		}
 
 
-		GLint texUnitLoc = glGetUniformLocation(g3shaderProgramID, "myTexture");
+		GLint texUnitLoc = G3SIM_Uniform("myTexture");
 		//set texture 0 in the shader
 		glProgramUniform1i(g3shaderProgramID, texUnitLoc , 0);
 
 		//Enable texture in the shader
-		glProgramUniform1i(g3shaderProgramID, glGetUniformLocation(g3shaderProgramID, "useTexture") , 1);
+		glProgramUniform1i(g3shaderProgramID, G3SIM_Uniform("useTexture") , 1);
 	}
 	else
 	{
 		//Disable texture in the shader
-		glProgramUniform1i(g3shaderProgramID, glGetUniformLocation(g3shaderProgramID, "useTexture") , 0);							
+		glProgramUniform1i(g3shaderProgramID, G3SIM_Uniform("useTexture") , 0);							
 	}
 
 	// Set the polygon mode in the shader
-	GLint polygonModeLoc = glGetUniformLocation(g3shaderProgramID, "polygonMode");
+	GLint polygonModeLoc = G3SIM_Uniform("polygonMode");
 	glProgramUniform1i(g3shaderProgramID, polygonModeLoc , s_curPolygonAttr.polygonMode);
 
 	// Set the fog attributes in the shader
-	GLint useFogLoc = glGetUniformLocation(g3shaderProgramID, "useFog");
+	GLint useFogLoc = G3SIM_Uniform("useFog");
 	int useFog = getbit(s_reg_G3X_DISP3DCNT, 7);
 	if(!s_curPolygonAttr.fogEnable) {
 		useFog = 0;
@@ -294,7 +355,7 @@ void G3SIM_FlushArray()
 	glProgramUniform1i(g3shaderProgramID, useFogLoc , useFog);
 	if(useFog) {
 		// Fog color
-		GLint fogColorLoc = glGetUniformLocation(g3shaderProgramID, "fogColor");
+		GLint fogColorLoc = G3SIM_Uniform("fogColor");
 		u32 fogRed = s_reg_G3X_FOG_COLOR & 0b11111;
 		u32 fogGreen = (s_reg_G3X_FOG_COLOR >> 5) & 0b11111;
 		u32 fogBlue = (s_reg_G3X_FOG_COLOR >> 10) & 0b11111;
@@ -320,10 +381,10 @@ void G3SIM_FlushArray()
 			fogDensity[i] = (float)fogTablePtr[i] / 127.0f;
 		}
 
-		GLint fogDepthBoundaryLoc = glGetUniformLocation(g3shaderProgramID, "fogDepthBoundary");
+		GLint fogDepthBoundaryLoc = G3SIM_Uniform("fogDepthBoundary");
 		glProgramUniform1fv(g3shaderProgramID, fogDepthBoundaryLoc, 32, fogDepthBoundary);
 
-		GLint fogDensityLoc = glGetUniformLocation(g3shaderProgramID, "fogDensity");
+		GLint fogDensityLoc = G3SIM_Uniform("fogDensity");
 		glProgramUniform1fv(g3shaderProgramID, fogDensityLoc, 32, fogDensity);
 	}
 
@@ -381,9 +442,9 @@ void G3SIM_DrawItems()
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, item->textureId);
 			//Enable texture in the shader
-			glProgramUniform1i(g3shaderProgramID, glGetUniformLocation(g3shaderProgramID, "useTexture") , 1);
+			glProgramUniform1i(g3shaderProgramID, G3SIM_Uniform("useTexture") , 1);
 		} else {
-			glProgramUniform1i(g3shaderProgramID, glGetUniformLocation(g3shaderProgramID, "useTexture") , 0);
+			glProgramUniform1i(g3shaderProgramID, G3SIM_Uniform("useTexture") , 0);
 		}
 
 		if(item->texImageParam.flipS)
@@ -401,12 +462,12 @@ void G3SIM_DrawItems()
 		}
 
 		// Set the polygon mode in the shader
-		GLint polygonModeLoc = glGetUniformLocation(g3shaderProgramID, "polygonMode");
+		GLint polygonModeLoc = G3SIM_Uniform("polygonMode");
 		glProgramUniform1i(g3shaderProgramID, polygonModeLoc, item->polygonAttr.polygonMode);
 
 		glBindVertexArray(s_G3DrawVertexArray);
 		glBindBuffer(GL_ARRAY_BUFFER, s_G3DrawVertexBuffer);
-		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(G3SIM_Vertex_t) * item->vertsCount, item->verts);
+		G3SIM_UploadVerts(item->verts, item->vertsCount);
 		glDrawArrays(GL_TRIANGLES,0, item->vertsCount);
 
 		free(item->verts);

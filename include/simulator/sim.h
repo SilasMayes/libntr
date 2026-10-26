@@ -74,6 +74,16 @@ void SIM_u16ToRGB( u16 in, u8 * r, u8 *g, u8 * b );
 SIM_config_type * SIM_GetConfigPtr();
 u64 SIM_GetRenderFrameTime();
 u64 SIM_GetFullFrameTime();
+
+// Where each frame's time goes, in milliseconds (smoothed over recent frames)
+typedef struct SIM_FrameTimings {
+    float gameMs;      // game logic between frames (excluding 3D draw submission)
+    float g3SubmitMs;  // 3D draw calls issued by the game (texture lookup, uploads, GL)
+    float drawMs;      // compositing both screens, GUI
+    float capWaitMs;   // frame limiter sleep
+    float swapMs;      // buffer swap (vsync wait, driver)
+} SIM_FrameTimings;
+void SIM_GetFrameTimings(SIM_FrameTimings *out);
 const char * SIM_GetLibntrGitHash();
 const char * SIM_GetProjectGitHash();
 SDL_Window * SIM_GetSDLWindow();

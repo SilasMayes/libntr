@@ -1,5 +1,7 @@
 #include "simulator/sim_crc32.h"
 
+#include <stdint.h>
+
 
 #define UPDC32(octet,crc) (crc_32_tab[((crc)\
      ^ ((u8)octet)) & 0xff] ^ ((crc) >> 8))
@@ -55,11 +57,64 @@ u32 SIM_updateCRC32(u8 ch, u32 crc)
       return UPDC32(ch, crc);
 }
 
+// The 3D renderer hashes every texture and palette it draws with (texture cache keys),
+// several hundred times a frame, so this has to be fast. ARMv8 has CRC-32 instructions
+// that compute exactly the same checksum as the table, eight bytes at a time.
+#if defined(__aarch64__) && (defined(__linux__) || defined(__ANDROID__)) && (defined(__clang__) || defined(__GNUC__))
+#include <arm_acle.h>
+#include <string.h>
+#include <sys/auxv.h>
+#ifndef HWCAP_CRC32
+#define HWCAP_CRC32 (1 << 7)
+#endif
+#define SIM_HAVE_HW_CRC32 1
+
+#ifdef __clang__
+__attribute__((target("crc")))
+#else
+__attribute__((target("+crc")))
+#endif
+static u32 SIM_crc32Hw(const u8 *buf, size_t len, u32 crc)
+{
+      while (len > 0 && ((uintptr_t)buf & 7) != 0) {
+            crc = __crc32b(crc, *buf++);
+            len--;
+      }
+      while (len >= 8) {
+            u64 word;
+            memcpy(&word, buf, sizeof(word));
+            crc = __crc32d(crc, word);
+            buf += 8;
+            len -= 8;
+      }
+      while (len > 0) {
+            crc = __crc32b(crc, *buf++);
+            len--;
+      }
+      return crc;
+}
+
+static int SIM_HasHwCrc32(void)
+{
+      static int sState = -1;
+      if (sState < 0) {
+            sState = (getauxval(AT_HWCAP) & HWCAP_CRC32) ? 1 : 0;
+      }
+      return sState;
+}
+#endif
+
 u32 SIM_crc32buf(u8 *buf, size_t len)
 {
       u32 oldcrc32;
 
       oldcrc32 = 0xFFFFFFFF;
+
+#ifdef SIM_HAVE_HW_CRC32
+      if (SIM_HasHwCrc32()) {
+            return ~SIM_crc32Hw(buf, len, oldcrc32);
+      }
+#endif
 
       for ( ; len; --len, ++buf)
       {

@@ -7,6 +7,7 @@
 #endif
 
 // TODO: Move more of these in here as statics
+extern "C" void SIM_UploadEngineHalf(const u8 *fullBuffer, BOOL isSub);
 extern u8 bgtex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
 extern u8 bg0tex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
 extern u8 bg1tex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
@@ -239,9 +240,7 @@ void G2SIM_DrawBG(u8 bgNum, u8 bgMode, u8 bg03D, u8 isSub) {
   glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[bgNum]);
   glBindTexture(GL_TEXTURE_2D, s_bgTextureId[bgNum]);
 
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SIM_NDS_SCREEN_WIDTH,
-                  SIM_NDS_SCREEN_HEIGHT * 2, GL_RGBA, GL_UNSIGNED_BYTE,
-                  (void *)bgTexBuf);
+  SIM_UploadEngineHalf(bgTexBuf, isSub);
 #ifdef SDK_TRACY_ENABLE
   TracyCZoneEnd(ctx);
 #endif

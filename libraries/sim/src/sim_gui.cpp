@@ -1,5 +1,6 @@
 #include "simulator/sim.h"
 #include "simulator/sim_gui.hpp"
+#include "simulator/sim_files.h"
 
 #include "simulator/imgui/imgui.hpp"
 
@@ -27,6 +28,11 @@ static bool sShowWindowPrjSpecific = false;
 static std::function<void(std::string)> sFileDialogCallback = nullptr;
 
 void PrjMain(bool *) __attribute__((weak));
+
+// Drawn every frame, whether or not the settings GUI is open (notifications, indicators)
+void PrjOverlay() __attribute__((weak));
+void __attribute__((weak)) PrjOverlay() {
+}
 
 void __attribute__((weak)) PrjMain(bool * openState) {
     ImGui::OpenPopup("Application-Specific GUI");
@@ -78,6 +84,9 @@ void Init(SDL_Window * window, SDL_GLContext context) {
 }
 
 void Main() {
+    PrjOverlay();
+    SIM_Files_Update();
+
     if(sEnabled) {
         ImGui::Begin("libntr", &sEnabled);
 
@@ -88,6 +97,11 @@ void Main() {
 
         float frameTimeMs = static_cast<float>(SIM_GetFullFrameTime()) / 1000000.0f;
         ImGui::Text("%.0ffps", 1000.0f / frameTimeMs);
+
+        SIM_FrameTimings timings;
+        SIM_GetFrameTimings(&timings);
+        ImGui::Text("Game %.1f  3D %.1f  Draw %.1f", timings.gameMs, timings.g3SubmitMs, timings.drawMs);
+        ImGui::Text("Wait %.1f  Swap %.1f (ms)", timings.capWaitMs, timings.swapMs);
 
 
         AppButton("Config", &sShowAppConfig, AppConfigInit, AppConfigMain);

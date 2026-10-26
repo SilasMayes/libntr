@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <simulator/sim_backup.h>
 #endif
 
 #ifdef __cplusplus
@@ -114,25 +115,8 @@ u32 CARD_GetBackupPageSize(void);
                                    MIDmaCallback callback, void *arg, BOOL is_async)
   {
     #ifdef SDK_PORT
-    FILE * backupFilePtr;
-    backupFilePtr = fopen("save.bin", "rb");
-    if(!backupFilePtr) {
-      // File does not exist. Create the file
-      backupFilePtr = fopen("save.bin", "wb");
-
-      // Zero out the file with the len
-      u8 * buf = (u8*)malloc(len + src);
-      memset(buf, 0, len + src);
-      fwrite(buf, 1, len + src, backupFilePtr);
-      fclose(backupFilePtr);
-      free(buf);
-
-      // Reopen file
-      backupFilePtr = fopen("save.bin", "rb");
-    }
-    fseek(backupFilePtr, src, SEEK_SET);
-    fread(dst, 1, len, backupFilePtr);
-    fclose(backupFilePtr);
+    (void)is_async;
+    SIM_Backup_Read(src, dst, len);
     if( callback != NULL )
     {
       callback(arg);
@@ -164,16 +148,13 @@ u32 CARD_GetBackupPageSize(void);
                                     MIDmaCallback callback, void *arg, BOOL is_async)
   {
     #ifdef SDK_PORT
-    FILE * backupFilePtr;
-    backupFilePtr = fopen("save.bin", "rb+");
-    fseek(backupFilePtr, dst, SEEK_SET);
-    fwrite(src, 1, len, backupFilePtr);
-    fclose(backupFilePtr);
+    (void)is_async;
+    BOOL written = SIM_Backup_Write(dst, src, len);
     if( callback != NULL )
     {
       callback(arg);
     }
-    return TRUE;
+    return written;
     #else
     return CARDi_RequestStreamCommand((u32)src, (u32)dst, len, callback, arg, is_async,
                                       CARD_REQ_WRITE_BACKUP, CARD_RETRY_COUNT_MAX,
@@ -211,16 +192,13 @@ u32 CARD_GetBackupPageSize(void);
                                              MIDmaCallback callback, void *arg, BOOL is_async)
   {
     #ifdef SDK_PORT
-    FILE * backupFilePtr;
-    backupFilePtr = fopen("save.bin", "rb+");
-    fseek(backupFilePtr, dst, SEEK_SET);
-    fwrite(src, 1, len, backupFilePtr);
-    fclose(backupFilePtr);
+    (void)is_async;
+    BOOL written = SIM_Backup_Write(dst, src, len);
     if( callback != NULL )
     {
       callback(arg);
     }
-    return CARD_RESULT_SUCCESS;
+    return written;
     #else
     return CARDi_RequestStreamCommand((u32)src, (u32)dst, len, callback, arg, is_async,
                                       CARD_REQ_WRITE_BACKUP, CARD_RETRY_COUNT_MAX,

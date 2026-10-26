@@ -36,6 +36,7 @@ extern "C" int NitroSpMain(void *arg);
 #include <simulator/g3_handler.h>
 #include <simulator/sim_gui.hpp>
 #include <simulator/sim_display.h>
+#include <simulator/sim_lifecycle.h>
 #ifdef SDK_BUILD_ANDROID
 #include <simulator/sim_android.h>
 #endif
@@ -95,6 +96,26 @@ u8 s_SIM_useWBuffer = 0;
 static struct timespec s_SIM_lastFrameEnd;
 static u64 sRenderFrameTime;
 static u64 sFullFrameTime;
+
+// Per-frame time breakdown (smoothed), shown in the libntr window
+static SIM_FrameTimings sTimings;
+static u64 sRenderStartNs;
+static u64 sBeforeWaitNs;
+
+static u64 SIM_NowNs() {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (u64)now.tv_sec * 1000000000ull + (u64)now.tv_nsec;
+}
+
+static void SIM_Smooth(float *value, u64 ns) {
+  const float ms = (float)ns / 1000000.0f;
+  *value = (*value == 0.0f) ? ms : (*value * 0.9f + ms * 0.1f);
+}
+
+extern "C" void SIM_GetFrameTimings(SIM_FrameTimings *out) {
+  *out = sTimings;
+}
 
 static constexpr auto SteamDeckWidth = 1280;
 static constexpr auto SteamDeckHeight = 800;
@@ -225,6 +246,23 @@ static u64 map(u64 x, u64 in_min, u64 in_max, u64 out_min, u64 out_max);
 static void process_nibble(unsigned char data4bit, int *Index, int *Pcm16bit);
 static void DrawScreenQuad();
 static void DrawEngine(BOOL isSub);
+
+// The 2D layer textures hold both screens (256x384); each engine only draws into the
+// half for the screen it is shown on. Uploading just that half halves the per-frame
+// texture traffic, which mobile GPUs feel.
+extern "C" int SIM_EngineTextureRow(BOOL isSub) {
+  const BOOL topScreen = (s_reg_GX_POWCNT >> 15) ? !isSub : isSub;
+  return topScreen ? SIM_NDS_SCREEN_HEIGHT : 0;
+}
+
+extern "C" void SIM_UploadEngineHalf(const u8 *fullBuffer, BOOL isSub) {
+  const int row = SIM_EngineTextureRow(isSub);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row, SIM_NDS_SCREEN_WIDTH, SIM_NDS_SCREEN_HEIGHT,
+                  GL_RGBA, GL_UNSIGNED_BYTE, fullBuffer + 4 * SIM_NDS_SCREEN_WIDTH * row);
+}
+
+// Sprite layers are often empty; skip re-uploading an empty half that is already empty
+static bool sObjHalfEmpty[5][2]; // 4 OBJ priority layers + the OBJ window, per half
 
 static u8 s_numG3CommandsThisFrame = 0;
 
@@ -751,6 +789,7 @@ static void DrawEngine(BOOL isSub) {
     memset(objWindowTex, 0, sizeof(objWindowTex));
   }
 
+  bool objLayerUsed[5] = {false, false, false, false, false};
   for (int i = 0; i < SIM_NDS_SCREEN_HEIGHT; i++) {
     for (int bgnum = 0x0C00; bgnum >= 0x0000; bgnum -= 0x0400) {
       memset(OBJLine, 0, sizeof(OBJLine));
@@ -789,10 +828,12 @@ static void DrawEngine(BOOL isSub) {
             u16 color = objPltt[colorIdx];
             SIM_u16ToRGB(color, &r, &g, &b);
             G2SIM_PlotPixel(pixelBuf, r, g, b, j, i, isSub);
+            objLayerUsed[bgnum >> 10] = true;
           }
         }
         if (OBJWindow[isSub][j]) {
           G2SIM_PlotPixel(objWindowBuf, 255, 255, 255, j, i, isSub);
+          objLayerUsed[4] = true;
         }
       }
     }
@@ -835,9 +876,11 @@ static void DrawEngine(BOOL isSub) {
       oamPixelBuf = NULL;
       break;
     }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SIM_NDS_SCREEN_WIDTH,
-                    SIM_NDS_SCREEN_HEIGHT * 2, GL_RGBA, GL_UNSIGNED_BYTE,
-                    (void *)oamPixelBuf);
+    const int half = SIM_EngineTextureRow(isSub) ? 1 : 0;
+    if (objLayerUsed[i] || !sObjHalfEmpty[i][half]) {
+      SIM_UploadEngineHalf((const u8 *)oamPixelBuf, isSub);
+      sObjHalfEmpty[i][half] = !objLayerUsed[i];
+    }
   }
 
   glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[0]);
@@ -856,9 +899,13 @@ static void DrawEngine(BOOL isSub) {
   glActiveTexture(GL_TEXTURE0 + s_objWindowTexUnit);
   glBindTexture(GL_TEXTURE_2D, objWindowTextureId);
   u8 *objWindowBuf = isSub ? objWindowsTex : objWindowTex;
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SIM_NDS_SCREEN_WIDTH,
-                  SIM_NDS_SCREEN_HEIGHT * 2, GL_RGBA, GL_UNSIGNED_BYTE,
-                  (void *)objWindowBuf);
+  {
+    const int half = SIM_EngineTextureRow(isSub) ? 1 : 0;
+    if (objLayerUsed[4] || !sObjHalfEmpty[4][half]) {
+      SIM_UploadEngineHalf(objWindowBuf, isSub);
+      sObjHalfEmpty[4][half] = !objLayerUsed[4];
+    }
+  }
   glProgramUniform1i(
       g2shaderProgramID,
       glGetUniformLocation(g2shaderProgramID, "objWindowTexture"),
@@ -1054,6 +1101,17 @@ void *SIM_Render(void *arg) {
   u16 keys;
   u32 i;
 
+  {
+    // Everything since the last frame was shown: the game's own work, including the 3D
+    // draw calls it issues (counted separately in G3SIM_TakeSubmitNs)
+    sRenderStartNs = SIM_NowNs();
+    u64 lastFrameEndNs = (u64)s_SIM_lastFrameEnd.tv_sec * 1000000000ull + (u64)s_SIM_lastFrameEnd.tv_nsec;
+    u64 g3SubmitNs = G3SIM_TakeSubmitNs();
+    u64 sinceLastFrame = sRenderStartNs - lastFrameEndNs;
+    SIM_Smooth(&sTimings.gameMs, sinceLastFrame > g3SubmitNs ? sinceLastFrame - g3SubmitNs : 0);
+    SIM_Smooth(&sTimings.g3SubmitMs, g3SubmitNs);
+  }
+
   G3SIM_FlushArray();
 
   // Draw the translucent 3D stuff
@@ -1171,9 +1229,23 @@ void *SIM_Render(void *arg) {
       }
       SIM::GUI::ProcessEvent(&Event);
 
+      // Give the game a chance to save before the app pauses or exits
+      if (Event.type == SDL_APP_WILLENTERBACKGROUND) {
+        SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_BACKGROUND);
+      } else if (Event.type == SDL_APP_TERMINATING) {
+        SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_QUIT);
+      } else if (Event.type == SDL_QUIT) {
+        // Ctrl+C / SIGTERM / logging out on desktop; the activity finishing on Android
+        SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_QUIT);
+#ifndef SDK_BUILD_ANDROID
+        exit(0);
+#endif
+      }
+
       if (Event.type == SDL_WINDOWEVENT) {
         switch (Event.window.event) {
         case SDL_WINDOWEVENT_CLOSE:
+          SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_QUIT);
           exit(0);
           break;
         }
@@ -1520,6 +1592,9 @@ void *SIM_Render(void *arg) {
 #ifdef SDK_TRACY_ENABLE
     TracyCZoneEnd(SimRenderZone);
 #endif
+    sBeforeWaitNs = SIM_NowNs();
+    SIM_Smooth(&sTimings.drawMs, sBeforeWaitNs - sRenderStartNs);
+
     // Limit framerate to 60 fps
     if (s_SIM_config.capFrameRate && !sFastForward) {
 
@@ -1533,7 +1608,27 @@ void *SIM_Render(void *arg) {
       }
     }
 
+    u64 beforeSwapNs = SIM_NowNs();
+    SIM_Smooth(&sTimings.capWaitMs, beforeSwapNs - sBeforeWaitNs);
+
     SDL_GL_SwapWindow(window);
+
+    SIM_Smooth(&sTimings.swapMs, SIM_NowNs() - beforeSwapNs);
+
+    {
+      // LIBNTR_PERF_LOG=1: print the frame time breakdown every two seconds
+      static int sPerfLog = -1;
+      static u32 sPerfFrames = 0;
+      if (sPerfLog < 0) {
+        const char *env = getenv("LIBNTR_PERF_LOG");
+        sPerfLog = (env != NULL && env[0] == '1') ? 1 : 0;
+      }
+      if (sPerfLog && ++sPerfFrames % 120 == 0) {
+        printf("perf: game %.2f  3d %.2f  draw %.2f  wait %.2f  swap %.2f ms\n", sTimings.gameMs,
+               sTimings.g3SubmitMs, sTimings.drawMs, sTimings.capWaitMs, sTimings.swapMs);
+        fflush(stdout);
+      }
+    }
 
     if(sChangeInternalResAfterRender) {
       SIM_SetInternalResolution(sPendingInternalRes);
