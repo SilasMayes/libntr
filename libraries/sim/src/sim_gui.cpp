@@ -87,12 +87,12 @@ void Init(SDL_Window * window, SDL_GLContext context) {
 }
 
 void Main() {
-    SIM_Carts_DrawPicker();
+    SIM_Files_Update();
+    SIM_Carts_DrawUI();
     if (SIM_Carts_PickerActive()) {
         return;
     }
     PrjOverlay();
-    SIM_Files_Update();
 
     if(sEnabled) {
         ImGui::Begin("libntr", &sEnabled);
@@ -153,7 +153,7 @@ void NewFrame() {
 }
 
 void ProcessEvent(SDL_Event * event) {
-    if(sEnabled || SIM_Carts_PickerActive()) {
+    if(sEnabled || SIM_Carts_UIActive()) {
         ImGui_ImplSDL2_ProcessEvent(event);
     }
 }
@@ -176,7 +176,8 @@ void Enable() {
 }
 
 bool IsGameLogicPaused() {
-    return sPauseGameLogic;
+    // The game waits while a game is being added from inside it
+    return sPauseGameLogic || (SIM_Carts_UIActive() && !SIM_Carts_PickerActive());
 }
 
 // Generic button to open another GUI applet

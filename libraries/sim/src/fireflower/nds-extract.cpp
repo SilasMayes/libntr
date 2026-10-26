@@ -108,6 +108,10 @@ void dumpFntTree(const NitroROM& rom, const NDSDirectory& dir, const fs::path& p
 			unsigned short fid = dir.firstFileID + i;
 			unsigned start = urom[(fatOffset + fid * 8) / 4];
 			unsigned size = urom[(fatOffset + fid * 8 + 4) / 4] - start;
+			if ((size_t)start + size > rom.size()) {
+				std::cout << DERROR << "File " << fp.string() << " is outside the ROM" << std::endl;
+				continue;
+			}
 
 			std::ofstream outFile(fp, std::ios::binary | std::ios::out);
 		
@@ -118,7 +122,7 @@ void dumpFntTree(const NitroROM& rom, const NDSDirectory& dir, const fs::path& p
 
 			}
 
-			outFile.write(reinterpret_cast<const char*>(&rom[start]), size);
+			outFile.write(reinterpret_cast<const char*>((rom.data() + (start))), size);
 			outFile.close();
 
 		} else {
@@ -239,6 +243,18 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 	unsigned rsaSize = 136;
 
 
+	// The parts the game needs must be inside the file
+	const size_t romSize = rom.size();
+	if ((size_t)arm9Offset + arm9Size > romSize || (size_t)arm7Offset + arm7Size > romSize
+		|| (size_t)ovt9Offset + ovt9Size > romSize || (size_t)ovt7Offset + ovt7Size > romSize
+		|| (size_t)fntOffset + fntSize > romSize || (size_t)fatOffset + fatSize > romSize) {
+		std::cout << DERROR << "NDS input file " << ndsInputPath.string() << " is truncated" << std::endl;
+		return -1;
+	}
+	if (iconOffset != 0 && (size_t)iconOffset + 0x23C0 > romSize) {
+		iconOffset = 0;
+	}
+
 	std::cout << DINFO << "Creating directories" << std::endl;
 
 	try {
@@ -324,7 +340,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		FSTREAM_OPEN_CHECK
 
 
-		outFile.write(reinterpret_cast<const char*>(&rom[arm9Offset]), arm9Size);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (arm9Offset))), arm9Size);
 		outFile.close();
 
 	} else {
@@ -343,7 +359,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[arm7Offset]), arm7Size);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (arm7Offset))), arm7Size);
 		outFile.close();
 
 	} else {
@@ -362,7 +378,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[ovt9Offset]), ovt9Size);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (ovt9Offset))), ovt9Size);
 		outFile.close();
 		
 	} else {
@@ -381,7 +397,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[ovt7Offset]), ovt7Size);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (ovt7Offset))), ovt7Size);
 		outFile.close();
 		
 	} else {
@@ -401,7 +417,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 
 		if (iconOffset) {
 
-			switch (*reinterpret_cast<unsigned short*>(&rom[iconOffset])) {
+			switch (*reinterpret_cast<unsigned short*>((rom.data() + (iconOffset)))) {
 
 				default:
 					std::cout << DWARNING << "Invalid Icon / Title ID, defaulting to 0x840" << std::endl;
@@ -431,7 +447,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[iconOffset]), iconSize);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (iconOffset))), iconSize);
 		outFile.close();
 		
 	} else {
@@ -450,7 +466,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[fntOffset]), fntSize);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (fntOffset))), fntSize);
 		outFile.close();
 		
 	} else {
@@ -469,7 +485,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[fatOffset]), fatSize);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (fatOffset))), fatSize);
 		outFile.close();
 
 	} else {
@@ -481,14 +497,19 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 
 	outputPath = fsOutputPath.string() + Separator + "rsasig.bin";
 
-	if (!fs::exists(outputPath)) {
+	if ((size_t)rsaOffset + rsaSize > rom.size()) {
+
+		// Trimmed ROMs (and patched ones, e.g. ROM hacks made with xdelta) end before it
+		std::cout << DINFO << "No RSA signature in this ROM" << std::endl;
+
+	} else if (!fs::exists(outputPath)) {
 
 		std::cout << DINFO << "Extracting RSA signature " << outputPath.string() << std::endl;
 
 		outFile.open(outputPath, std::ios::binary | std::ios::out);
 		FSTREAM_OPEN_CHECK
 
-		outFile.write(reinterpret_cast<const char*>(&rom[rsaOffset]), rsaSize);
+		outFile.write(reinterpret_cast<const char*>((rom.data() + (rsaOffset))), rsaSize);
 		outFile.close();
 		
 	} else {
@@ -517,7 +538,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 				outFile.open(outputPath, std::ios::binary | std::ios::out);
 				FSTREAM_OPEN_CHECK
 
-				outFile.write(reinterpret_cast<const char*>(&rom[ovStart]), ovSize);
+				outFile.write(reinterpret_cast<const char*>((rom.data() + (ovStart))), ovSize);
 				outFile.close();
 
 			} else {
@@ -550,7 +571,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 				outFile.open(outputPath, std::ios::binary | std::ios::out);
 				FSTREAM_OPEN_CHECK
 
-				outFile.write(reinterpret_cast<const char*>(&rom[ovStart]), ovSize);
+				outFile.write(reinterpret_cast<const char*>((rom.data() + (ovStart))), ovSize);
 				outFile.close();
 
 			} else {
@@ -565,7 +586,7 @@ int SIM_NDSExtractTo(std::string ndsFilePath, std::string outputDir){
 
 	std::cout << DINFO << "Extracting Data files" << std::endl;
 
-	NDSDirectory rootDir = buildFntTree(&rom[fntOffset], 0xF000, fntSize);
+	NDSDirectory rootDir = buildFntTree((rom.data() + (fntOffset)), 0xF000, fntSize);
 	dumpFntTree(rom, rootDir, dataPath, fatOffset);
 
 	std::cout << DINFO << "Done" << std::endl;
