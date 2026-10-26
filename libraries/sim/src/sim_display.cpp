@@ -3,7 +3,10 @@
 #include <simulator/sim_display.h>
 #include <simulator/sim_opengl.h>
 
+#include <simulator/sim_companion.h>
+
 #include <atomic>
+#include <deque>
 #include <mutex>
 
 #ifdef SDK_BUILD_ANDROID
@@ -19,6 +22,18 @@ namespace {
 std::atomic<bool> sTouchDown{false};
 std::atomic<int> sTouchX{0};
 std::atomic<int> sTouchY{0};
+
+// Ordered touch events (Java UI thread or SDL events -> render thread)
+std::mutex sTouchQueueLock;
+std::deque<SIM_TouchEvent> sTouchQueue;
+
+void QueueTouch(int type, int x, int y) {
+  std::lock_guard<std::mutex> guard(sTouchQueueLock);
+  if (sTouchQueue.size() >= 512) {
+    sTouchQueue.pop_front();
+  }
+  sTouchQueue.push_back({type, x, y});
+}
 
 #ifdef SDK_BUILD_ANDROID
 
@@ -70,9 +85,12 @@ void UpdateSecondWindow() {
     int mainX, mainY, mainW, mainH;
     SDL_GetWindowPosition(sMainWindow, &mainX, &mainY);
     SDL_GetWindowSize(sMainWindow, &mainW, &mainH);
+    // With a companion UI, mimic the AYN Thor's lower panel (1080x1240) at half size
+    const bool companion = SIM_Prj_CompanionEnabled() != FALSE;
+    const int width = companion ? 540 : SIM_NDS_SCREEN_WIDTH * 2;
+    const int height = companion ? 620 : SIM_NDS_SCREEN_HEIGHT * 2;
     sSecondWindow = SDL_CreateWindow(
-        "Bottom Screen", mainX + mainW + 16, mainY, SIM_NDS_SCREEN_WIDTH * 2,
-        SIM_NDS_SCREEN_HEIGHT * 2,
+        "Bottom Screen", mainX + mainW + 16, mainY, width, height,
         SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (sSecondWindow == nullptr) {
       printf("Could not create the bottom screen window: %s\n", SDL_GetError());
@@ -240,6 +258,9 @@ extern "C" BOOL SIM_Display_ProcessEvent(const SDL_Event *event) {
       sTouchDown = (event->type == SDL_MOUSEBUTTONDOWN);
       sTouchX = event->button.x;
       sTouchY = event->button.y;
+      int x, y;
+      SIM_Display_GetSecondaryTouch(&x, &y);
+      QueueTouch(event->type == SDL_MOUSEBUTTONDOWN ? SIM_TOUCH_DOWN : SIM_TOUCH_UP, x, y);
     }
     return TRUE;
   case SDL_MOUSEMOTION:
@@ -248,11 +269,26 @@ extern "C" BOOL SIM_Display_ProcessEvent(const SDL_Event *event) {
     }
     sTouchX = event->motion.x;
     sTouchY = event->motion.y;
+    {
+      int x, y;
+      SIM_Display_GetSecondaryTouch(&x, &y);
+      QueueTouch(SIM_TOUCH_MOVE, x, y);
+    }
     return TRUE;
   default:
     return FALSE;
   }
 #endif
+}
+
+extern "C" BOOL SIM_Display_PollSecondaryTouch(SIM_TouchEvent *event) {
+  std::lock_guard<std::mutex> guard(sTouchQueueLock);
+  if (sTouchQueue.empty()) {
+    return FALSE;
+  }
+  *event = sTouchQueue.front();
+  sTouchQueue.pop_front();
+  return TRUE;
 }
 
 extern "C" BOOL SIM_Display_GetSecondaryTouch(int *x, int *y) {
@@ -301,9 +337,11 @@ Java_org_pokeplatinum_port_SecondaryScreen_nativeSurfaceDestroyed(JNIEnv *, jcla
 
 JNIEXPORT void JNICALL Java_org_pokeplatinum_port_SecondaryScreen_nativeTouch(
     JNIEnv *, jclass, jboolean down, jfloat x, jfloat y) {
+  const bool wasDown = sTouchDown;
   sTouchX = (int)x;
   sTouchY = (int)y;
   sTouchDown = down ? true : false;
+  QueueTouch(down ? (wasDown ? SIM_TOUCH_MOVE : SIM_TOUCH_DOWN) : SIM_TOUCH_UP, (int)x, (int)y);
 }
 
 } // extern "C"

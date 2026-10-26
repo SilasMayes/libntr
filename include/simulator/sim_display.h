@@ -41,6 +41,22 @@ BOOL SIM_Display_ProcessEvent(const SDL_Event *event);
 // finger/mouse button is down.
 BOOL SIM_Display_GetSecondaryTouch(int *x, int *y);
 
+// Touch events on the secondary output, in order, in pixels of its drawable (top-left
+// origin). Quick taps that start and end between two frames are not lost.
+enum {
+    SIM_TOUCH_DOWN = 0,
+    SIM_TOUCH_MOVE = 1,
+    SIM_TOUCH_UP = 2,
+};
+typedef struct SIM_TouchEvent {
+    int type;
+    int x;
+    int y;
+} SIM_TouchEvent;
+
+// Pops the oldest pending touch event. FALSE when there is none.
+BOOL SIM_Display_PollSecondaryTouch(SIM_TouchEvent *event);
+
 #ifdef __cplusplus
 }
 #endif

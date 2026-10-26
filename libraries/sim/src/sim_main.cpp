@@ -37,6 +37,7 @@ extern "C" int NitroSpMain(void *arg);
 #include <simulator/sim_gui.hpp>
 #include <simulator/sim_display.h>
 #include <simulator/sim_lifecycle.h>
+#include <simulator/sim_companion.h>
 #ifdef SDK_BUILD_ANDROID
 #include <simulator/sim_android.h>
 #endif
@@ -282,6 +283,14 @@ static SingleScreenQuad s_SingleScreenQuad = SINGLE_SCREEN_NONE;
 
 // Touch panel rectangle on the secondary output, in its drawable's pixels
 static int s_SecondaryTouchRect[4] = {};
+
+// Who owns the finger currently down on the secondary output: the DS touch screen or
+// the companion UI next to it (decided where the touch starts)
+enum SecondaryTouchOwner { TOUCH_OWNER_NONE, TOUCH_OWNER_DS, TOUCH_OWNER_COMPANION };
+static SecondaryTouchOwner s_SecondaryTouchOwner = TOUCH_OWNER_NONE;
+static bool s_SecondaryDsTouchDown = false;
+static int s_SecondaryDsTouchX = 0;
+static int s_SecondaryDsTouchY = 0;
 // Was the bottom screen on the secondary output last frame?
 static bool s_WasDualScreen = false;
 
@@ -1026,6 +1035,9 @@ static void HandleJoystickKeyDown(int aKey) {
   else if (aKey == 8) {
     // Right stick click on Android handhelds toggles GUI
     SIM::GUI::Toggle();
+  } else if (aKey == 7) {
+    // Left stick click: companion UI full screen on the lower display (or back)
+    SIM_Companion_ToggleFullScreen();
   }
 #endif
 }
@@ -1290,6 +1302,9 @@ void *SIM_Render(void *arg) {
         } else if (keyRead == s_SIM_config.padSettings.selectKey) {
           // Select button
           s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111111111011;
+        } else if (keyRead == SDLK_F1) {
+          // Companion UI full screen on the secondary window (or back)
+          SIM_Companion_ToggleFullScreen();
         } else if (keyRead == s_SIM_config.padSettings.guiKey) {
           // Toggle Debug GUI
           SIM::GUI::Toggle();
@@ -1436,13 +1451,37 @@ void *SIM_Render(void *arg) {
     if (dualScreen) {
       // The touch screen lives on the secondary output. Touches/clicks on the main
       // window are ignored (they still reach the ImGui settings overlay).
-      int touchX;
-      int touchY;
-      BOOL touchDown = SIM_Display_GetSecondaryTouch(&touchX, &touchY);
       const bool bottomOnSecondary = !s_SIM_config.swapScreens;
-      if (bottomOnSecondary && touchDown &&
-          touchX >= s_SecondaryTouchRect[0] && touchX < s_SecondaryTouchRect[2] &&
-          touchY >= s_SecondaryTouchRect[1] && touchY < s_SecondaryTouchRect[3]) {
+      SIM_TouchEvent touch;
+      while (SIM_Display_PollSecondaryTouch(&touch)) {
+        if (touch.type == SIM_TOUCH_DOWN) {
+          const bool onDsScreen =
+              bottomOnSecondary && touch.x >= s_SecondaryTouchRect[0] &&
+              touch.x < s_SecondaryTouchRect[2] && touch.y >= s_SecondaryTouchRect[1] &&
+              touch.y < s_SecondaryTouchRect[3];
+          s_SecondaryTouchOwner = onDsScreen ? TOUCH_OWNER_DS : TOUCH_OWNER_COMPANION;
+        }
+        if (s_SecondaryTouchOwner == TOUCH_OWNER_DS) {
+          s_SecondaryDsTouchDown = touch.type != SIM_TOUCH_UP;
+          s_SecondaryDsTouchX = touch.x;
+          s_SecondaryDsTouchY = touch.y;
+        } else if (s_SecondaryTouchOwner == TOUCH_OWNER_COMPANION) {
+          SIM_Companion_QueueTouch(touch.type, touch.x, touch.y);
+        }
+        if (touch.type == SIM_TOUCH_UP) {
+          s_SecondaryTouchOwner = TOUCH_OWNER_NONE;
+        }
+      }
+
+      if (bottomOnSecondary && s_SecondaryDsTouchDown &&
+          s_SecondaryTouchRect[2] > s_SecondaryTouchRect[0]) {
+        // Keep a drag that leaves the screen on its edge
+        int touchX = s_SecondaryDsTouchX;
+        int touchY = s_SecondaryDsTouchY;
+        touchX = touchX < s_SecondaryTouchRect[0] ? s_SecondaryTouchRect[0] : touchX;
+        touchX = touchX > s_SecondaryTouchRect[2] - 1 ? s_SecondaryTouchRect[2] - 1 : touchX;
+        touchY = touchY < s_SecondaryTouchRect[1] ? s_SecondaryTouchRect[1] : touchY;
+        touchY = touchY > s_SecondaryTouchRect[3] - 1 ? s_SecondaryTouchRect[3] - 1 : touchY;
         s_tpData.x = (u16)map(touchX, s_SecondaryTouchRect[0],
                               s_SecondaryTouchRect[2], 0, SIM_NDS_SCREEN_WIDTH);
         s_tpData.y = (u16)map(touchY, s_SecondaryTouchRect[1],
@@ -1519,23 +1558,32 @@ void *SIM_Render(void *arg) {
       int secondaryWidth;
       int secondaryHeight;
       if (SIM_Display_BeginSecondary(&secondaryWidth, &secondaryHeight)) {
-        int secX, secY, secW, secH;
-        FitViewport(secondaryWidth, secondaryHeight, 256.0f / 192.0f, &secX,
-                    &secY, &secW, &secH);
+        // DS screen, plus the game's companion UI when it has one (sim_companion.h)
+        SIM_CompanionLayout layout;
+        SIM_Companion_ComputeLayout(secondaryWidth, secondaryHeight, &layout);
 
         glViewport(0, 0, secondaryWidth, secondaryHeight);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glViewport(secX, secY, secW, secH);
 
-        // GL's origin is bottom-left, touch coordinates are top-left
-        s_SecondaryTouchRect[0] = secX;
-        s_SecondaryTouchRect[1] = secondaryHeight - (secY + secH);
-        s_SecondaryTouchRect[2] = secX + secW;
-        s_SecondaryTouchRect[3] = secondaryHeight - secY;
+        if (layout.dsVisible) {
+          // GL's origin is bottom-left, layout and touch coordinates are top-left
+          glViewport(layout.dsX, secondaryHeight - (layout.dsY + layout.dsHeight),
+                     layout.dsWidth, layout.dsHeight);
+          s_SecondaryTouchRect[0] = layout.dsX;
+          s_SecondaryTouchRect[1] = layout.dsY;
+          s_SecondaryTouchRect[2] = layout.dsX + layout.dsWidth;
+          s_SecondaryTouchRect[3] = layout.dsY + layout.dsHeight;
 
-        s_SingleScreenQuad = swapped ? SINGLE_SCREEN_TOP : SINGLE_SCREEN_BOTTOM;
-        DrawEngine(swapped ? topIsSub : !topIsSub);
+          s_SingleScreenQuad = swapped ? SINGLE_SCREEN_TOP : SINGLE_SCREEN_BOTTOM;
+          DrawEngine(swapped ? topIsSub : !topIsSub);
+        } else {
+          s_SecondaryTouchRect[0] = s_SecondaryTouchRect[1] = 0;
+          s_SecondaryTouchRect[2] = s_SecondaryTouchRect[3] = 0;
+          s_SecondaryDsTouchDown = false;
+        }
+
+        SIM_Companion_Render(&layout);
         SIM_Display_EndSecondary();
       }
 
