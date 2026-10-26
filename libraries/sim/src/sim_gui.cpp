@@ -2,6 +2,9 @@
 #include "simulator/sim_gui.hpp"
 #include "simulator/sim_files.h"
 #include "simulator/sim_carts.h"
+#include "simulator/sim_settings.hpp"
+#include "simulator/sim_ui.hpp"
+#include "simulator/simvariables.h"
 
 #include "simulator/imgui/imgui.hpp"
 
@@ -15,8 +18,9 @@ namespace SIM::GUI {
 static SDL_Window * sWindow;
 static SDL_GLContext sContext;
 static ImGuiContext * sImguiContext;
-static bool sEnabled = false;
+static bool sEnabled = false; // the developer windows
 static bool sPauseGameLogic = false;
+static bool sWaitForRelease = false; // a menu closed: the game waits until A/B/Start are let go
 static constexpr ImVec2 sButtonSize = {100, 20};
 static float sUiScale = 1.0f;
 
@@ -82,20 +86,41 @@ void Init(SDL_Window * window, SDL_GLContext context) {
     sUiScale = uiScale;
 #endif
 
-    //ImFontAtlas::ImFontAtlas_AddFontDefault
-    //ioptr->Fonts.AddFontDefault(NULL);
+    SIM::UI::Init();
+}
+
+static bool MenuActive() {
+    return SIM::Settings::IsOpen() || SIM_Carts_UIActive();
 }
 
 void Main() {
+    static bool sMenuWasActive = false;
+    const bool menuActive = MenuActive();
+    if (sMenuWasActive && !menuActive) {
+        sWaitForRelease = true;
+    }
+    sMenuWasActive = menuActive;
+
     SIM_Files_Update();
-    SIM_Carts_DrawUI();
-    if (SIM_Carts_PickerActive()) {
+    if (SIM_Carts_UIActive()) {
+        // The game picker, or adding a game
+        SIM_Carts_DrawUI();
         return;
     }
     PrjOverlay();
 
+    if (SIM::Settings::IsOpen()) {
+        SIM::Settings::Draw();
+        return;
+    }
+
     if(sEnabled) {
         ImGui::Begin("libntr", &sEnabled);
+
+        if (ImGui::Button("Back to the settings")) {
+            sEnabled = false;
+            SIM::Settings::Open();
+        }
 
         ImGui::Text("Git rev: %s", SIM_GetLibntrGitHash());
 
@@ -149,11 +174,13 @@ void OpenFileDialog(std::function<void(std::string)> callback) {
 void NewFrame() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
+    // The menus take the DS buttons (after the backend, which clears the gamepad flag)
+    SIM::UI::FeedPad(MenuActive());
     ImGui::NewFrame();
 }
 
 void ProcessEvent(SDL_Event * event) {
-    if(sEnabled || SIM_Carts_UIActive()) {
+    if(sEnabled || MenuActive()) {
         ImGui_ImplSDL2_ProcessEvent(event);
     }
 }
@@ -163,11 +190,16 @@ void Render() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
+// The settings key (Android: back button, R3)
 void Toggle() {
-    if(sEnabled) {
+    if (SIM_Carts_UIActive()) {
+        SIM_Carts_Back();
+    } else if (sEnabled) {
         sEnabled = false;
+    } else if (SIM::Settings::IsOpen()) {
+        SIM::Settings::Close();
     } else {
-        sEnabled = true;
+        SIM::Settings::Open();
     }
 }
 
@@ -175,9 +207,21 @@ void Enable() {
     sEnabled = true;
 }
 
+void ShowDeveloperWindows() {
+    sEnabled = true;
+}
+
 bool IsGameLogicPaused() {
-    // The game waits while a game is being added from inside it
-    return sPauseGameLogic || (SIM_Carts_UIActive() && !SIM_Carts_PickerActive());
+    if (sWaitForRelease) {
+        // Don't let the button that closed a menu reach the game
+        if ((s_reg_PAD_KEYINPUT & 0x00B) == 0x00B) {
+            sWaitForRelease = false;
+        } else {
+            return true;
+        }
+    }
+    // The game waits while a menu is open
+    return sPauseGameLogic || SIM::Settings::IsOpen() || (SIM_Carts_UIActive() && !SIM_Carts_PickerActive());
 }
 
 // Generic button to open another GUI applet

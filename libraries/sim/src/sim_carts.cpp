@@ -1,13 +1,9 @@
 // Games side by side ("carts"). See include/simulator/sim_carts.h
 #include <simulator/sim.h>
 #include <simulator/sim_carts.h>
-#include <simulator/sim_gui.hpp>
-#include <simulator/sim_files.h>
 #include <simulator/sim_lifecycle.h>
-#include <simulator/sim_vcdiff.h>
+#include <simulator/sim_ui.hpp>
 #include <simulator/simvariables.h>
-
-#include <SDL2/SDL.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -17,8 +13,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "nds-extract.hpp"
-#include "simulator/imgui/imgui.hpp"
+#include "sim_carts_internal.hpp"
 
 #ifdef SDK_BUILD_ANDROID
 #include <simulator/sim_android.h>
@@ -31,40 +26,22 @@ extern "C" void __attribute__((weak)) SIM_Prj_CartName(const char *dir, char *na
   snprintf(name, nameSize, "Pokemon");
 }
 
+namespace SIM::Carts {
+
 namespace {
 
-std::string sBaseDir;           // the data directory (settings, first game)
-std::string sCurrentId;         // game to start: "" for the data directory itself
+std::string sBaseDir;   // the data directory (settings, first game)
+std::string sCurrentId; // game to start: "" for the data directory itself
 bool sAskAtLaunch = true;
 bool sPickerActive = false;
 int sSelection = 0;
-u16 sPreviousKeys = 0x3FF;
 SIM_Cart sCurrent;
 
 bool sSkipPickerOnce = false; // switching games: go straight into the chosen one
 
-// Adding a game: the "Add a game" window (a ROM, and patches to apply to it)
-struct PickedFile {
-  std::string path;
-  std::string name;
-};
-enum AddStep { ADD_IDLE, ADD_PICKING_ROM, ADD_PICKING_PATCH, ADD_WORK_PENDING, ADD_WORKING };
-bool sAddOpen = false;
-AddStep sAddStep = ADD_IDLE;
-PickedFile sAddRom;
-std::vector<PickedFile> sAddPatches;
-std::string sAddMessage;
-bool sAddFailed = false;
-std::string sAddedId;   // the game just added, offered to play
-std::string sAddedName;
-void (*sAddDone)(BOOL ok, const char *id) = nullptr;
-
 constexpr const char *kStateFile = "carts.ini";
 constexpr const char *kNameFile = "cart.name";
-
-std::string CartDir(const std::string &id) {
-  return id.empty() ? sBaseDir : sBaseDir + "/carts/" + id;
-}
+constexpr const char *kInfoFile = "cart.info";
 
 void LoadState() {
   FILE *file = fopen(SIM_SettingsPath(kStateFile), "r");
@@ -95,6 +72,82 @@ void SaveState() {
   fclose(file);
 }
 
+void EnterCart(const std::string &id) {
+  std::string dir = CartDir(id);
+
+  // Some libraries (DWC's backup) open firmware.bin by a relative path: give every game
+  // a copy of the shared one
+  std::error_code error;
+  if (!id.empty() && !fs::exists(dir + "/firmware.bin", error) && fs::exists(SIM_SettingsPath("firmware.bin"), error)) {
+    fs::copy_file(SIM_SettingsPath("firmware.bin"), dir + "/firmware.bin", error);
+  }
+
+  if (chdir(dir.c_str()) == 0) {
+    printf("Game: %s (%s)\n", id.empty() ? "data directory" : id.c_str(), dir.c_str());
+  } else {
+    printf("Could not enter %s, staying in the data directory\n", dir.c_str());
+    sCurrentId.clear();
+    chdir(sBaseDir.c_str());
+  }
+  sCurrent = {};
+  snprintf(sCurrent.id, sizeof(sCurrent.id), "%s", sCurrentId.c_str());
+  sCurrent.hasFiles = HasFiles(CartDir(sCurrentId)) ? TRUE : FALSE;
+  ReadName(sCurrentId, &sCurrent);
+}
+
+// The game picker at launch: a card per game (touch, or the D-pad and A)
+void DrawPicker() {
+  using namespace SIM::UI;
+  SIM_Cart carts[SIM_CARTS_MAX];
+  int count = SIM_Carts_List(carts);
+  if (sSelection >= count) {
+    sSelection = 0;
+  }
+
+  BeginScreen("Choose a game", "Choose a game", nullptr, S(640.0f));
+  int start = -1;
+  for (int i = 0; i < count; i++) {
+    ImGui::PushID(i);
+    std::string subtitle = carts[i].info;
+    if (i == sSelection) {
+      subtitle = subtitle.empty() ? "Played last" : "Played last. " + subtitle;
+    }
+    if (Card(carts[i].name, subtitle.c_str(), i == sSelection)) {
+      start = i;
+    }
+    if (i == sSelection) {
+      SetDefaultFocus();
+    }
+    ImGui::PopID();
+  }
+  Space(6.0f);
+  bool add = Button("Add a game", "Another ROM, or a ROM hack like Renegade Platinum: choose a folder with the ROM and "
+                                  "its patches.");
+  bool ask = sAskAtLaunch;
+  if (Toggle("Ask every time the app starts", "Turn off to go straight into the game played last.", &ask)) {
+    SIM_Carts_SetAskAtLaunch(ask ? TRUE : FALSE);
+  }
+  Note("Each game keeps its own saves. Switch any time in Settings > Games.");
+  EndScreen();
+
+  if (add) {
+    OpenAdd(nullptr);
+  } else if (start >= 0) {
+    sSelection = start;
+    sPickerActive = false;
+  }
+}
+
+} // namespace
+
+std::string BaseDir() {
+  return sBaseDir;
+}
+
+std::string CartDir(const std::string &id) {
+  return id.empty() ? sBaseDir : sBaseDir + "/carts/" + id;
+}
+
 // A game's ROM has been extracted there (desktop builds may run from the build output,
 // which has the game files and header.bin but no arm9.bin)
 bool HasFiles(const std::string &dir) {
@@ -121,6 +174,13 @@ void ReadName(const std::string &id, SIM_Cart *cart) {
   }
   if (cart->name[0] == '\0') {
     snprintf(cart->name, sizeof(cart->name), "%s", id.empty() ? "Pokemon" : id.c_str());
+  }
+  file = fopen((dir + "/" + kInfoFile).c_str(), "r");
+  if (file != nullptr) {
+    if (fgets(cart->info, sizeof(cart->info), file) != nullptr) {
+      cart->info[strcspn(cart->info, "\r\n")] = '\0';
+    }
+    fclose(file);
   }
 }
 
@@ -167,40 +227,21 @@ bool WriteWholeFile(const std::string &path, const u8 *data, size_t size) {
 }
 
 std::string FileName(const std::string &path) {
-  size_t slash = path.find_last_of("/\\");
-  return slash == std::string::npos ? path : path.substr(slash + 1);
+  std::string trimmed = path;
+  while (trimmed.size() > 1 && (trimmed.back() == '/' || trimmed.back() == '\\')) {
+    trimmed.pop_back();
+  }
+  size_t slash = trimmed.find_last_of("/\\");
+  return slash == std::string::npos ? trimmed : trimmed.substr(slash + 1);
 }
 
-// The document picker's copies (Android) live in the data directory's imports/
+// The document and folder pickers' copies (Android) live in the data directory's imports/
 void RemoveIfImported(const std::string &path) {
   std::string imports = sBaseDir + "/imports/";
-  if (path.compare(0, imports.size(), imports) == 0) {
-    remove(path.c_str());
+  if (!path.empty() && path.compare(0, imports.size(), imports) == 0) {
+    std::error_code error;
+    fs::remove_all(path, error);
   }
-}
-
-void FilePicked(const char *path, void *user) {
-  const bool isPatch = user != nullptr;
-  sAddStep = ADD_IDLE;
-  if (path == nullptr) {
-    return;
-  }
-  PickedFile file = { path, FileName(path) };
-  if (isPatch) {
-    sAddPatches.push_back(file);
-  } else {
-    if (!sAddRom.path.empty()) {
-      RemoveIfImported(sAddRom.path);
-    }
-    sAddRom = file;
-  }
-  sAddMessage.clear();
-  sAddFailed = false;
-}
-
-void AddFailed(const std::string &message) {
-  sAddMessage = message;
-  sAddFailed = true;
 }
 
 std::string NewCartId() {
@@ -214,145 +255,24 @@ std::string NewCartId() {
   return "cart100";
 }
 
-// Builds the game from the picked ROM and patches and extracts it into carts/<id>
-void DoAdd() {
-  std::string romPath = sAddRom.path;
-  std::string patchedPath;
+bool PickerActive() {
+  return sPickerActive;
+}
 
-  if (!sAddPatches.empty()) {
-    std::vector<u8> rom;
-    if (!ReadWholeFile(sAddRom.path, rom)) {
-      AddFailed("The ROM could not be read.");
-      return;
+void PickerPlay(const std::string &id) {
+  SIM_Cart carts[SIM_CARTS_MAX];
+  int count = SIM_Carts_List(carts);
+  for (int i = 0; i < count; i++) {
+    if (id == carts[i].id) {
+      sSelection = i;
+      sPickerActive = false;
     }
-    if (!GameCodeMatches(rom.data(), rom.size())) {
-      AddFailed("That ROM is not this game. Choose your Pokemon Platinum (USA) ROM.");
-      return;
-    }
-
-    std::vector<u8> current = std::move(rom);
-    int stackedMismatches = 0;
-    for (size_t i = 0; i < sAddPatches.size(); i++) {
-      std::vector<u8> patch;
-      if (!ReadWholeFile(sAddPatches[i].path, patch)) {
-        AddFailed(sAddPatches[i].name + " could not be read.");
-        return;
-      }
-      SIM_VCDiffResult result;
-      SIM_VCDiff_Apply(current.data(), current.size(), patch.data(), patch.size(), &result);
-      if (result.data == nullptr) {
-        AddFailed(sAddPatches[i].name + ": " + result.error);
-        return;
-      }
-      if (i == 0 && result.checksumMismatches > 0) {
-        free(result.data);
-        AddFailed(sAddPatches[i].name + " was made for a different version of the ROM. "
-                  "(Renegade Platinum: 4997 for later carts/dumps, 3541 for early ones.)");
-        return;
-      }
-      stackedMismatches += result.checksumMismatches;
-      current.assign(result.data, result.data + result.size);
-      free(result.data);
-    }
-    printf("Add a game: %zu patch(es) applied%s\n", sAddPatches.size(),
-           stackedMismatches > 0 ? " (later ones on top of earlier ones)" : "");
-    if (!GameCodeMatches(current.data(), current.size())) {
-      AddFailed("The patched ROM is not this game.");
-      return;
-    }
-
-    std::error_code error;
-    fs::create_directories(sBaseDir + "/imports", error);
-    patchedPath = sBaseDir + "/imports/patched.nds";
-    if (!WriteWholeFile(patchedPath, current.data(), current.size())) {
-      remove(patchedPath.c_str());
-      AddFailed("There is not enough space to build the game.");
-      return;
-    }
-    romPath = patchedPath;
-  } else {
-    FILE *file = fopen(romPath.c_str(), "rb");
-    u8 bytes[0x10] = {0};
-    bool ok = file != nullptr && fread(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
-    if (file != nullptr) {
-      fclose(file);
-    }
-    if (!ok || !GameCodeMatches(bytes, sizeof(bytes))) {
-      AddFailed("That file is not a ROM of this game.");
-      return;
-    }
-  }
-
-  std::string id = NewCartId();
-  std::error_code error;
-  fs::create_directories(CartDir(id), error);
-  int result = error ? -1 : SIM_NDSExtractTo(romPath, CartDir(id));
-  if (!patchedPath.empty()) {
-    remove(patchedPath.c_str());
-  }
-  if (result != 0 || !HasFiles(CartDir(id))) {
-    fs::remove_all(CartDir(id), error);
-    AddFailed("The game could not be extracted (is there enough space?).");
-    return;
-  }
-
-  // The picked files have served their purpose
-  RemoveIfImported(sAddRom.path);
-  for (const PickedFile &patch : sAddPatches) {
-    RemoveIfImported(patch.path);
-  }
-  sAddRom = {};
-  sAddPatches.clear();
-
-  SIM_Cart cart = {};
-  cart.hasFiles = TRUE;
-  ReadName(id, &cart);
-  sAddedId = id;
-  sAddedName = cart.name;
-  sAddMessage = std::string("Added ") + cart.name + ".";
-  sAddFailed = false;
-  if (sAddDone != nullptr) {
-    sAddDone(TRUE, id.c_str());
   }
 }
 
-void CloseAddWindow() {
-  RemoveIfImported(sAddRom.path);
-  for (const PickedFile &patch : sAddPatches) {
-    RemoveIfImported(patch.path);
-  }
-  sAddRom = {};
-  sAddPatches.clear();
-  sAddOpen = false;
-  sAddDone = nullptr;
-}
+} // namespace SIM::Carts
 
-void DrawAddWindow();
-
-void EnterCart(const std::string &id) {
-  std::string dir = CartDir(id);
-
-  // Some libraries (DWC's backup) open firmware.bin by a relative path: give every game
-  // a copy of the shared one
-  std::error_code error;
-  if (!id.empty() && !fs::exists(dir + "/firmware.bin", error) && fs::exists(SIM_SettingsPath("firmware.bin"), error)) {
-    fs::copy_file(SIM_SettingsPath("firmware.bin"), dir + "/firmware.bin", error);
-  }
-
-  if (chdir(dir.c_str()) == 0) {
-    printf("Game: %s (%s)\n", id.empty() ? "data directory" : id.c_str(), dir.c_str());
-  } else {
-    printf("Could not enter %s, staying in the data directory\n", dir.c_str());
-    sCurrentId.clear();
-    chdir(sBaseDir.c_str());
-  }
-  sCurrent = {};
-  snprintf(sCurrent.id, sizeof(sCurrent.id), "%s", sCurrentId.c_str());
-  sCurrent.hasFiles = HasFiles(CartDir(sCurrentId)) ? TRUE : FALSE;
-  ReadName(sCurrentId, &sCurrent);
-}
-
-} // namespace
+using namespace SIM::Carts;
 
 extern "C" const char *SIM_SettingsPath(const char *fileName) {
   // A few paths are in use at once (config + its temp file...); keep a small ring
@@ -390,7 +310,10 @@ extern "C" int SIM_Carts_List(SIM_Cart carts[SIM_CARTS_MAX]) {
         ids.push_back(entry.path().filename().string());
       }
     }
-    std::sort(ids.begin(), ids.end());
+    // cart2, cart3... cart10 in the order they were added
+    std::sort(ids.begin(), ids.end(), [](const std::string &a, const std::string &b) {
+      return a.size() != b.size() ? a.size() < b.size() : a < b;
+    });
     for (const std::string &id : ids) {
       if (count == SIM_CARTS_MAX) {
         break;
@@ -425,19 +348,17 @@ extern "C" void SIM_Carts_SetAskAtLaunch(BOOL ask) {
 }
 
 extern "C" void SIM_Carts_Add(void (*done)(BOOL ok, const char *id)) {
-  if (sAddOpen) {
-    return;
-  }
-  sAddOpen = true;
-  sAddStep = ADD_IDLE;
-  sAddMessage.clear();
-  sAddFailed = false;
-  sAddedId.clear();
-  sAddDone = done;
+  OpenAdd(done);
 }
 
 extern "C" BOOL SIM_Carts_UIActive(void) {
-  return (sPickerActive || sAddOpen) ? TRUE : FALSE;
+  return (sPickerActive || AddOpen()) ? TRUE : FALSE;
+}
+
+extern "C" void SIM_Carts_Back(void) {
+  if (AddOpen()) {
+    AddBack();
+  }
 }
 
 extern "C" void SIM_Carts_SwitchTo(const char *id) {
@@ -486,241 +407,11 @@ extern "C" BOOL SIM_Carts_PickerActive(void) {
   return sPickerActive ? TRUE : FALSE;
 }
 
-namespace {
-
-ImVec4 ButtonColor(bool selected) {
-  return selected ? ImVec4(0.26f, 0.50f, 0.80f, 1.0f) : ImVec4(0.18f, 0.22f, 0.30f, 1.0f);
-}
-
-bool BigButton(const char *label, float width, float height, bool selected = false) {
-  ImGui::PushStyleColor(ImGuiCol_Button, ButtonColor(selected));
-  ImGui::SetWindowFontScale(1.2f);
-  bool clicked = ImGui::Button(label, ImVec2(width, height));
-  ImGui::SetWindowFontScale(1.0f);
-  ImGui::PopStyleColor();
-  return clicked;
-}
-
-// "Add a game": the ROM, then any patches in order (Renegade Platinum: its patch, then
-// the Classic patch)
-void DrawAddWindow() {
-  if (sAddStep == ADD_WORKING) {
-    sAddStep = ADD_IDLE;
-    DoAdd();
-  } else if (sAddStep == ADD_WORK_PENDING) {
-    sAddStep = ADD_WORKING; // let "Building..." show for a frame first
-  }
-
-  ImGuiIO &io = ImGui::GetIO();
-  const float scale = io.FontGlobalScale;
-  const bool busy = sAddStep != ADD_IDLE;
-  ImGui::SetNextWindowPos(ImVec2(0, 0));
-  ImGui::SetNextWindowSize(io.DisplaySize);
-  ImGui::SetNextWindowFocus();
-  ImGui::Begin("Add a game", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-
-  const float width = ImGui::GetContentRegionAvail().x;
-  const float columnWidth = width * 0.7f;
-  const float x = (width - columnWidth) * 0.5f;
-  const float buttonHeight = 36.0f * scale;
-  ImGui::PushTextWrapPos(x + columnWidth);
-
-  ImGui::Dummy(ImVec2(0, 10.0f * scale));
-  ImGui::SetWindowFontScale(1.5f);
-  ImGui::SetCursorPosX((width - ImGui::CalcTextSize("Add a game").x) * 0.5f);
-  ImGui::TextUnformatted("Add a game");
-  ImGui::SetWindowFontScale(1.0f);
-  ImGui::Dummy(ImVec2(0, 6.0f * scale));
-
-  if (!sAddedId.empty()) {
-    ImGui::SetCursorPosX(x);
-    ImGui::TextWrapped("%s", sAddMessage.c_str());
-    ImGui::Dummy(ImVec2(0, 6.0f * scale));
-    ImGui::SetCursorPosX(x);
-    std::string play = "Play " + sAddedName;
-    if (BigButton(play.c_str(), columnWidth, buttonHeight, true)) {
-      std::string id = sAddedId;
-      CloseAddWindow();
-      if (sPickerActive) {
-        // From the game picker: start it
-        SIM_Cart carts[SIM_CARTS_MAX];
-        int count = SIM_Carts_List(carts);
-        for (int i = 0; i < count; i++) {
-          if (id == carts[i].id) {
-            sSelection = i;
-            sPickerActive = false;
-          }
-        }
-      } else {
-        SIM_Carts_SwitchTo(id.c_str());
-      }
-    }
-    ImGui::SetCursorPosX(x);
-    if (BigButton(sPickerActive ? "Back to the list" : "Later", columnWidth, buttonHeight)) {
-      CloseAddWindow();
-    }
-    ImGui::PopTextWrapPos();
-    ImGui::End();
-    return;
-  }
-
-  ImGui::SetCursorPosX(x);
-  ImGui::TextWrapped("1. The game's ROM (.nds)");
-  ImGui::SetCursorPosX(x);
-  ImGui::TextDisabled("%s", sAddRom.path.empty() ? "None chosen yet" : sAddRom.name.c_str());
-  ImGui::SetCursorPosX(x);
-  if (BigButton(sAddStep == ADD_PICKING_ROM ? "Waiting for the file..." : "Choose the ROM...", columnWidth, buttonHeight)
-      && !busy) {
-    sAddStep = ADD_PICKING_ROM;
-    SIM_Files_PickToOpen("Choose the game ROM", ".nds,.srl", FilePicked, nullptr);
-  }
-
-  ImGui::Dummy(ImVec2(0, 8.0f * scale));
-  ImGui::SetCursorPosX(x);
-  ImGui::TextWrapped("2. Patches to apply to it, in order (optional, .xdelta)");
-  for (size_t i = 0; i < sAddPatches.size(); i++) {
-    ImGui::SetCursorPosX(x);
-    ImGui::TextDisabled("%zu. %s", i + 1, sAddPatches[i].name.c_str());
-  }
-  ImGui::SetCursorPosX(x);
-  const float half = (columnWidth - 8.0f * scale) * 0.5f;
-  if (BigButton(sAddStep == ADD_PICKING_PATCH ? "Waiting for the file..." : "Add a patch...",
-                sAddPatches.empty() ? columnWidth : half, buttonHeight)
-      && !busy) {
-    sAddStep = ADD_PICKING_PATCH;
-    SIM_Files_PickToOpen("Choose a patch", ".xdelta,.vcdiff", FilePicked, (void *)1);
-  }
-  if (!sAddPatches.empty()) {
-    ImGui::SameLine(0, 8.0f * scale);
-    if (BigButton("Remove the last", half, buttonHeight) && !busy) {
-      RemoveIfImported(sAddPatches.back().path);
-      sAddPatches.pop_back();
-    }
-  }
-  ImGui::SetCursorPosX(x);
-  ImGui::TextDisabled("Renegade Platinum: your Platinum (USA) ROM, then RenegadePlatinum4997.xdelta "
-                      "(RenegadePlatinum3541 for early carts), then ClassicVersion.xdelta for Classic.");
-
-  ImGui::Dummy(ImVec2(0, 8.0f * scale));
-  if (!sAddMessage.empty() || busy) {
-    ImGui::SetCursorPosX(x);
-    if (sAddStep == ADD_WORK_PENDING || sAddStep == ADD_WORKING) {
-      ImGui::TextWrapped("Building the game, this takes a little while...");
-    } else if (sAddFailed) {
-      ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", sAddMessage.c_str());
-    } else {
-      ImGui::TextWrapped("%s", sAddMessage.c_str());
-    }
-  }
-
-  ImGui::SetCursorPosX(x);
-  const bool ready = !sAddRom.path.empty() && !busy;
-  if (!ready) {
-    ImGui::BeginDisabled();
-  }
-  if (BigButton(sAddPatches.empty() ? "Add the game" : "Patch and add", half, buttonHeight, ready)) {
-    sAddStep = ADD_WORK_PENDING;
-    sAddMessage.clear();
-  }
-  if (!ready) {
-    ImGui::EndDisabled();
-  }
-  ImGui::SameLine(0, 8.0f * scale);
-  if (BigButton("Cancel", half, buttonHeight) && !busy) {
-    CloseAddWindow();
-  }
-
-  ImGui::PopTextWrapPos();
-  ImGui::End();
-}
-
-} // namespace
-
-// The game picker (a full-window list; touch, mouse, or the D-pad and A) and the
-// "Add a game" window
+// The game picker and the "Add a game" screen
 extern "C" void SIM_Carts_DrawUI(void) {
-  if (sAddOpen) {
-    DrawAddWindow();
-    return;
-  }
-  if (!sPickerActive) {
-    return;
-  }
-
-  SIM_Cart carts[SIM_CARTS_MAX];
-  int count = SIM_Carts_List(carts);
-  if (sSelection > count) {
-    sSelection = count;
-  }
-
-  // The pad: up/down to choose, A or Start to play (KEYINPUT bits are low when pressed)
-  const u16 keys = s_reg_PAD_KEYINPUT;
-  const u16 pressed = (u16)(sPreviousKeys & ~keys);
-  sPreviousKeys = keys;
-  // Entries 0..count-1 are the games, count is "add a game"
-  if ((pressed & (1 << 6)) && sSelection > 0) {
-    sSelection--;
-  }
-  if ((pressed & (1 << 7)) && sSelection < count) {
-    sSelection++;
-  }
-
-  ImGuiIO &io = ImGui::GetIO();
-  const float scale = io.FontGlobalScale;
-  ImGui::SetNextWindowPos(ImVec2(0, 0));
-  ImGui::SetNextWindowSize(io.DisplaySize);
-  ImGui::Begin("Choose a game", nullptr,
-               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-
-  const float width = ImGui::GetContentRegionAvail().x;
-  const float buttonWidth = width * 0.6f;
-  const float buttonHeight = 44.0f * scale;
-  const float x = (width - buttonWidth) * 0.5f;
-
-  ImGui::Dummy(ImVec2(0, 20.0f * scale));
-  ImGui::SetWindowFontScale(1.6f);
-  ImVec2 titleSize = ImGui::CalcTextSize("Choose a game");
-  ImGui::SetCursorPosX((width - titleSize.x) * 0.5f);
-  ImGui::TextUnformatted("Choose a game");
-  ImGui::SetWindowFontScale(1.0f);
-  ImGui::Dummy(ImVec2(0, 14.0f * scale));
-
-  bool start = false;
-  bool add = false;
-  for (int i = 0; i <= count; i++) {
-    ImGui::SetCursorPosX(x);
-    ImGui::PushID(i);
-    bool clicked = BigButton(i == count ? "+  Add a game..." : carts[i].name, buttonWidth, buttonHeight, sSelection == i);
-    ImGui::PopID();
-    if (clicked) {
-      sSelection = i;
-      add = i == count;
-      start = !add;
-    }
-    ImGui::Dummy(ImVec2(0, 4.0f * scale));
-  }
-
-  if (pressed & ((1 << 0) | (1 << 3))) {
-    add = sSelection == count;
-    start = !add;
-  }
-
-  ImGui::Dummy(ImVec2(0, 8.0f * scale));
-  ImGui::SetCursorPosX(x);
-  bool ask = sAskAtLaunch;
-  if (ImGui::Checkbox("Ask every time the app starts", &ask)) {
-    SIM_Carts_SetAskAtLaunch(ask ? TRUE : FALSE);
-  }
-  ImGui::SetCursorPosX(x);
-  ImGui::PushTextWrapPos(x + buttonWidth);
-  ImGui::TextDisabled("Each game keeps its own saves. Switch any time from the Gear's Settings, or the settings "
-                      "GUI: Application > Games.");
-  ImGui::PopTextWrapPos();
-  ImGui::End();
-
-  if (add) {
-    SIM_Carts_Add(nullptr);
-  } else if (start && sSelection < count) {
-    sPickerActive = false;
+  if (AddOpen()) {
+    DrawAdd();
+  } else if (sPickerActive) {
+    DrawPicker();
   }
 }

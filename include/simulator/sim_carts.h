@@ -8,7 +8,8 @@
 // there, while settings go through SIM_SettingsPath.
 //
 // With more than one game a picker comes up at launch (unless turned off); games are
-// added from it or from the settings GUI by importing another ROM.
+// added from it or from the settings: from a folder holding a ROM and patches (which
+// patches go together is worked out by trying them), or from files chosen one by one.
 
 #include <nitro/types.h>
 
@@ -22,6 +23,7 @@ extern "C" {
 typedef struct SIM_Cart {
     char id[32];   // "" for the game in the data directory itself
     char name[SIM_CART_NAME_LEN];
+    char info[96]; // the patches it was built with ("" if none or not known)
     BOOL hasFiles; // its ROM has been extracted
 } SIM_Cart;
 
@@ -36,9 +38,10 @@ const SIM_Cart *SIM_Carts_Current(void);
 BOOL SIM_Carts_AskAtLaunch(void);
 void SIM_Carts_SetAskAtLaunch(BOOL ask);
 
-// Opens the "Add a game" window: the player picks a ROM and optionally patches to apply
-// to it (.xdelta, e.g. Renegade Platinum), and it is extracted as a new game, which the
-// window then offers to play. done (may be NULL) is called with the new game's id.
+// Opens the "Add a game" screen: the player picks a folder with a ROM and patches
+// (.xdelta, e.g. Renegade Platinum's), or a ROM and patches one by one, and it is
+// extracted as a new game, which the screen then offers to play. done (may be NULL) is
+// called with the new game's id.
 void SIM_Carts_Add(void (*done)(BOOL ok, const char *id));
 
 // Makes id the game to start and restarts the app (Android) or quits (desktop), letting
@@ -49,8 +52,9 @@ void SIM_Carts_SwitchTo(const char *id);
 void SIM_Carts_Init(void);      // first thing in main(): remembers the data directory
 void SIM_Carts_Choose(void);    // once the window exists: picker, then enter the game's directory
 BOOL SIM_Carts_PickerActive(void);
-BOOL SIM_Carts_UIActive(void);  // the picker or the "Add a game" window is up
+BOOL SIM_Carts_UIActive(void);  // the picker or the "Add a game" screen is up
 void SIM_Carts_DrawUI(void);    // every frame, from the GUI
+void SIM_Carts_Back(void);      // the settings key while they are up
 
 #ifdef __cplusplus
 }

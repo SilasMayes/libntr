@@ -20,6 +20,13 @@ typedef void (*SIM_FileSavedFn)(BOOL saved, void *user);
 // filters: comma-separated extensions for the desktop dialog, e.g. ".sav,.dsv"
 void SIM_Files_PickToOpen(const char *title, const char *filters, SIM_FileOpenedFn done, void *user);
 
+// Lets the player pick a folder (e.g. a ROM hack's download with its patches). On Android
+// its patches (.xdelta .vcdiff .delta) and ROMs (.nds .srl; only those whose game code is
+// gameCode unless it is NULL), also from one folder level down, are copied into a folder
+// of the app's own, whose path is passed; archives and unsupported patch formats it holds
+// are listed in .skipped there. On desktop the folder's own path. NULL if cancelled.
+void SIM_Files_PickFolder(const char *title, const char *gameCode, SIM_FileOpenedFn done, void *user);
+
 // Lets the player choose where to save a copy of sourcePath
 void SIM_Files_SaveCopy(const char *title, const char *sourcePath, const char *suggestedName,
                         SIM_FileSavedFn done, void *user);

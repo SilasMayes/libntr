@@ -17,7 +17,7 @@
 
 namespace {
 
-enum class Kind { NONE, OPEN, SAVE };
+enum class Kind { NONE, OPEN, FOLDER, SAVE };
 
 Kind sKind = Kind::NONE;
 SIM_FileOpenedFn sOpenedFn = nullptr;
@@ -36,7 +36,7 @@ void Finish(const char *openedPath, bool saved) {
   sSavedFn = nullptr;
   sUser = nullptr;
 
-  if (kind == Kind::OPEN && openedFn != nullptr) {
+  if ((kind == Kind::OPEN || kind == Kind::FOLDER) && openedFn != nullptr) {
     openedFn(openedPath, user);
   } else if (kind == Kind::SAVE && savedFn != nullptr) {
     savedFn(saved ? TRUE : FALSE, user);
@@ -52,7 +52,7 @@ std::mutex sResultLock;
 std::string sResultPath;
 bool sResultOk = false;
 
-bool CallActivity(const char *name, const char *signature, jstring arg1, jstring arg2) {
+bool CallActivity(const char *name, const char *signature, jstring arg1, jstring arg2, bool oneArg = false) {
   JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
   jobject activity = (jobject)SDL_AndroidGetActivity();
   if (env == nullptr || activity == nullptr) {
@@ -64,6 +64,8 @@ bool CallActivity(const char *name, const char *signature, jstring arg1, jstring
   if (method != nullptr) {
     if (arg2 != nullptr) {
       env->CallVoidMethod(activity, method, arg1, arg2);
+    } else if (oneArg) {
+      env->CallVoidMethod(activity, method, arg1);
     } else {
       env->CallVoidMethod(activity, method);
     }
@@ -110,6 +112,39 @@ extern "C" void SIM_Files_PickToOpen(const char *title, const char *filters, SIM
   IGFD::FileDialogConfig config;
   config.path = ".";
   ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, title, filters, config);
+#endif
+}
+
+extern "C" void SIM_Files_PickFolder(const char *title, const char *gameCode, SIM_FileOpenedFn done, void *user) {
+  if (sKind != Kind::NONE) {
+    if (done != nullptr) {
+      done(nullptr, user);
+    }
+    return;
+  }
+  sKind = Kind::FOLDER;
+  sOpenedFn = done;
+  sUser = user;
+
+#ifdef SDK_BUILD_ANDROID
+  (void)title;
+  sResult = RESULT_NONE;
+  JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+  bool started = false;
+  if (env != nullptr) {
+    jstring jCode = env->NewStringUTF(gameCode != nullptr ? gameCode : "");
+    started = CallActivity("pickFolder", "(Ljava/lang/String;)V", jCode, nullptr, true);
+    env->DeleteLocalRef(jCode);
+  }
+  if (!started) {
+    Finish(nullptr, false);
+  }
+#else
+  (void)gameCode;
+  IGFD::FileDialogConfig config;
+  config.path = ".";
+  // No filters: the dialog chooses a directory
+  ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, title, nullptr, config);
 #endif
 }
 
@@ -205,9 +240,12 @@ extern "C" void SIM_Files_Update(void) {
   if (ImGuiFileDialog::Instance()->Display(kDialogKey, ImGuiWindowFlags_NoCollapse, minSize)) {
     bool accepted = ImGuiFileDialog::Instance()->IsOk();
     std::string chosen = accepted ? ImGuiFileDialog::Instance()->GetFilePathName() : std::string();
+    if (accepted && sKind == Kind::FOLDER && chosen.empty()) {
+      chosen = ImGuiFileDialog::Instance()->GetCurrentPath();
+    }
     ImGuiFileDialog::Instance()->Close();
 
-    if (sKind == Kind::OPEN) {
+    if (sKind == Kind::OPEN || sKind == Kind::FOLDER) {
       Finish(accepted ? chosen.c_str() : nullptr, accepted);
     } else {
       bool saved = accepted && SimCopyFile(sSourcePath, chosen);

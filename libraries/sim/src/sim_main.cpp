@@ -35,6 +35,7 @@ extern "C" int NitroSpMain(void *arg);
 #include <simulator/g3_draw.h>
 #include <simulator/g3_handler.h>
 #include <simulator/sim_gui.hpp>
+#include <simulator/sim_settings.hpp>
 #include <simulator/sim_display.h>
 #include <simulator/sim_lifecycle.h>
 #include <simulator/sim_companion.h>
@@ -1238,6 +1239,10 @@ void *SIM_Render(void *arg) {
     while (SDL_PollEvent(&Event)) {
       if (SIM_Display_ProcessEvent(&Event)) {
         // Input/close event for the secondary output window
+        continue;
+      }
+      if (SIM::Settings::CaptureEvent(&Event)) {
+        // A key or button chosen for a control in the settings
         continue;
       }
       SIM::GUI::ProcessEvent(&Event);

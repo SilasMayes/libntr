@@ -17,6 +17,8 @@ void Toggle();
 void Enable();
 void OpenFileDialog(std::function<void(std::string)> callback);
 bool IsGameLogicPaused();
+// The original floating debug windows (libntr, multiplayer, the game's tools)
+void ShowDeveloperWindows();
 void AppButton(const char * label, bool * state, void (*aInitFunc)(void), void (*aAppFunc)(bool *));
 
 
