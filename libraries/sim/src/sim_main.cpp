@@ -1874,7 +1874,8 @@ void *SIM_Render(void *arg) {
     TracyCZoneEnd(SimRenderZone);
 #endif
     sBeforeWaitNs = SIM_NowNs();
-    if (present) {
+    // (skipping samples that span a pause, e.g. while the settings menu holds the game)
+    if (present && sBeforeWaitNs - sRenderStartNs < 250000000ull) {
       SIM_Smooth(&sTimings.drawMs, sBeforeWaitNs - sRenderStartNs);
     }
 #ifdef SDK_BUILD_ANDROID

@@ -107,6 +107,10 @@ void SIM_GetFrameTimings(SIM_FrameTimings *out);
 // shown. The game still runs with its input and vblank handlers as usual.
 void SIM_SkipNextFrame(void);
 
+// The DS clock (RTC) the game reads: the device's local time plus this many seconds
+void SIM_SetClockOffset(long long seconds);
+long long SIM_GetClockOffset(void);
+
 // Fast-forward: the game runs several DS frames per frame shown (FastForwardSpeed times
 // the normal speed, or as fast as it goes). On while its button is held, or switched on
 // and off by it (FastForwardToggle), or by the game (SIM_SetFastForward, e.g. a button

@@ -181,10 +181,23 @@ RTCResult RTC_GetTimeAsync (RTCTime * time, RTCCallback callback, void * arg)
 }
 
 #ifdef SDK_PORT
+// The game's clock runs this far ahead of (or behind) the device's (SIM_SetClockOffset)
+static long long sClockOffsetSeconds = 0;
+
+void SIM_SetClockOffset(long long seconds)
+{
+    sClockOffsetSeconds = seconds;
+}
+
+long long SIM_GetClockOffset(void)
+{
+    return sClockOffsetSeconds;
+}
+
 static void getPCTime( RTCTime* theTime )
 {
     struct tm * timeinfo;
-    time_t currentTime = time( NULL );
+    time_t currentTime = time( NULL ) + (time_t)sClockOffsetSeconds;
     timeinfo = localtime( &currentTime );
     theTime->hour = timeinfo->tm_hour;
     theTime->minute = timeinfo->tm_min;
@@ -194,7 +207,7 @@ static void getPCTime( RTCTime* theTime )
 static void getPCDate( RTCDate* theDate )
 {
     struct tm * timeinfo;
-    time_t currentTime = time( NULL );
+    time_t currentTime = time( NULL ) + (time_t)sClockOffsetSeconds;
     timeinfo = localtime( &currentTime );
 
     theDate->year = timeinfo->tm_year - 100;
