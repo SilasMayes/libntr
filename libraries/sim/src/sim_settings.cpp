@@ -143,8 +143,8 @@ const Control kControls[] = {
   { "Left", &SIM_config_pad_settings_type::leftKey, &SIM_config_pad_settings_type::leftJoyKey },
   { "Right", &SIM_config_pad_settings_type::rightKey, &SIM_config_pad_settings_type::rightJoyKey },
   { "Settings menu", &SIM_config_pad_settings_type::guiKey, nullptr },
-  { "Fast forward (hold)", &SIM_config_pad_settings_type::frameCapKey, nullptr },
-  { "Fast forward (toggle)", &SIM_config_pad_settings_type::frameCapToggleKey, nullptr },
+  { "Fast-forward", &SIM_config_pad_settings_type::frameCapKey, &SIM_config_pad_settings_type::fastForwardJoyKey },
+  { "Fast-forward on/off", &SIM_config_pad_settings_type::frameCapToggleKey, nullptr },
 };
 
 // The control waiting for a key or button
@@ -204,13 +204,42 @@ void ControlRow(const Control &control, bool joystick) {
   ImGui::PopID();
 }
 
+void DrawFastForward() {
+  SIM_config_type *config = SIM_GetConfigPtr();
+  Section("Fast-forward");
+  static const char *const kSpeeds[] = { "2x", "3x", "4x", "6x", "8x", "Max" };
+  static const int kSpeedValues[] = { 2, 3, 4, 6, 8, 0 };
+  int speed = 2;
+  for (int i = 0; i < 6; i++) {
+    if (kSpeedValues[i] == config->fastForwardSpeed) {
+      speed = i;
+    }
+  }
+  if (Choice("Speed", "Max runs the game as fast as the device can.", &speed, kSpeeds, 6)) {
+    config->fastForwardSpeed = (u8)kSpeedValues[speed];
+    SaveConfig();
+  }
+  static const char *const kModes[] = { "Hold", "Press on, press off" };
+  int mode = config->fastForwardToggle ? 1 : 0;
+  if (Choice("Fast-forward button", nullptr, &mode, kModes, 2)) {
+    config->fastForwardToggle = mode == 1 ? 1 : 0;
+    SaveConfig();
+  }
+  bool on = SIM_IsFastForwarding() != FALSE;
+  if (Toggle("Fast-forward now", "It stays on until you switch it off here or with the button.", &on)) {
+    SIM_SetFastForward(on ? TRUE : FALSE);
+  }
+}
+
 void DrawControls() {
   if (sCaptureTarget != nullptr && SDL_GetTicks64() > sCaptureUntil) {
     sCaptureTarget = nullptr;
   }
+  DrawFastForward();
 
 #ifdef SDK_BUILD_ANDROID
-  Note("Back button or R3: this menu. L3: the Gear on the whole lower screen. The D-pad always works as the D-pad.");
+  Note("Back button or R3: this menu. L3: the Gear on the whole lower screen. R2: fast-forward. The D-pad always "
+       "works as the D-pad.");
   Section("Controller");
   for (const Control &control : kControls) {
     if (control.joyKey != nullptr && strcmp(control.name, "Up") != 0 && strcmp(control.name, "Down") != 0 &&
@@ -286,7 +315,7 @@ void EnsurePages() {
   sPagesAdded = true;
   AddPage("Display", "Resolution, screens, frame timing", DrawDisplay, 40);
   AddPage("Sound", "Volume", DrawSound, 50);
-  AddPage("Controls", "Buttons and keys", DrawControls, 60);
+  AddPage("Controls", "Buttons and keys, fast-forward", DrawControls, 60);
   AddPage("Advanced", "Performance, developer windows", DrawAdvanced, 90);
   SIM_Prj_SettingsPages();
   SortPages();

@@ -45,6 +45,7 @@ typedef struct {
     int rJoyKey;
     int startJoyKey;
     int selectJoyKey;
+    int fastForwardJoyKey;
 } SIM_config_pad_settings_type;
 
 typedef struct {
@@ -63,6 +64,8 @@ typedef struct {
     u8 vsyncInterval; /* Vertical sync interval. Set to 0 to disable vsync, 1 every vblank, 2 every second vblank etc*/
     u8 capFrameRate; /* Should the frame rate be capped to 60 fps? */
     u8 perfOverlay; /* Show the frame timings over the game */
+    u8 fastForwardSpeed; /* Fast-forward: times the normal speed (0: as fast as it goes) */
+    u8 fastForwardToggle; /* Fast-forward button: TRUE switches it on and off, FALSE works while held */
     u8 macAddr[6]; /* MAC address */
     SIM_config_pad_settings_type padSettings; /* Input pad settings */
     NVRAMConfig osNvramConfig; /* OS NVRAM config */

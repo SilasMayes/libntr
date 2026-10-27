@@ -89,6 +89,12 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "PerfOverlay")) {
         config->perfOverlay = StringToBool(value);
     }
+    if(MATCH("General", "FastForwardSpeed")) {
+        config->fastForwardSpeed = atoi(value);
+    }
+    if(MATCH("General", "FastForwardToggle")) {
+        config->fastForwardToggle = StringToBool(value);
+    }
 
     if(MATCH("General", "MacAddr")) {
         char * pos = value;
@@ -184,6 +190,9 @@ static int IniHandler(void* user, const char* section, const char* name,
     }
     if(MATCH("PAD", "SelectJoyKey")) {
         config->padSettings.selectJoyKey = atoi(value);
+    }
+    if(MATCH("PAD", "FastForwardJoyKey")) {
+        config->padSettings.fastForwardJoyKey = atoi(value);
     }
 
     //OS NVRAM
@@ -391,6 +400,8 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->vsyncInterval = 1;
     aConfig->capFrameRate = TRUE;
     aConfig->perfOverlay = FALSE;
+    aConfig->fastForwardSpeed = 4;
+    aConfig->fastForwardToggle = FALSE;
     aConfig->masterVolume = 127;
 
     aConfig->padSettings.joyAxisDeadzone = 32767 / 4;
@@ -437,6 +448,11 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->padSettings.startJoyKey = 6;
     aConfig->padSettings.selectJoyKey = 4;
 #endif
+#ifdef SDK_BUILD_ANDROID
+    aConfig->padSettings.fastForwardJoyKey = 16; // R2 (as a button)
+#else
+    aConfig->padSettings.fastForwardJoyKey = SIM_CONFIG_JOY_INVALID_KEY;
+#endif
 
     // Set a random MAC address (with a nintendo prefix)
     aConfig->macAddr[0] = 0x98;
@@ -480,6 +496,8 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "VsyncInterval=%d\n", aConfig->vsyncInterval);
     fprintf(configFile, "CapFrameRate=%s\n", BoolToString(aConfig->capFrameRate));
     fprintf(configFile, "PerfOverlay=%s\n", BoolToString(aConfig->perfOverlay));
+    fprintf(configFile, "FastForwardSpeed=%d\n", aConfig->fastForwardSpeed);
+    fprintf(configFile, "FastForwardToggle=%s\n", BoolToString(aConfig->fastForwardToggle));
     fprintf(configFile, "MacAddr=%02x%02x%02x%02x%02x%02x\n", aConfig->macAddr[0],
                                                               aConfig->macAddr[1],
                                                               aConfig->macAddr[2],
@@ -517,6 +535,7 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "RJoyKey=%d\n", aConfig->padSettings.rJoyKey);
     fprintf(configFile, "StartJoyKey=%d\n", aConfig->padSettings.startJoyKey);
     fprintf(configFile, "SelectJoyKey=%d\n", aConfig->padSettings.selectJoyKey);
+    fprintf(configFile, "FastForwardJoyKey=%d\n", aConfig->padSettings.fastForwardJoyKey);
     fprintf(configFile, "\n");
 
     fprintf(configFile, "[OSNVRAM]\n");

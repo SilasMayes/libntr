@@ -127,6 +127,54 @@ extern "C" void SIM_GetFrameTimings(SIM_FrameTimings *out) {
 // A frame the game replaces before it can be seen isn't drawn (see sim.h)
 static bool sSkipNextFrame = false;
 
+// Fast-forward (see sim.h)
+static bool sFastForwardHeld = false;    // a hold button is down
+static bool sFastForwardOn = false;      // switched on (toggle button, or the game)
+static bool sFastForwardJoyDown = false; // the controller's button (axes repeat their down events)
+static bool sFastForwardSwap = false;    // the swap interval is 0 for it
+static u64 sNextVBlankNs = 0;            // fast-forward pacing
+static u64 sLastPresentNs = 0;
+
+extern "C" BOOL SIM_IsFastForwarding(void) {
+  return (sFastForwardHeld || sFastForwardOn) ? TRUE : FALSE;
+}
+
+extern "C" void SIM_SetFastForward(BOOL on) {
+  sFastForwardOn = on != FALSE;
+}
+
+// The fast-forward button: held, or pressed to switch it on and off (FastForwardToggle)
+static void FastForwardButton(bool down) {
+  if (SIM_GetConfigPtr()->fastForwardToggle) {
+    if (down) {
+      sFastForwardOn = !sFastForwardOn;
+    }
+  } else {
+    sFastForwardHeld = down;
+  }
+}
+
+static void PreciseSleepNs(u64 ns) {
+  struct timespec ts;
+  ts.tv_sec = (time_t)(ns / 1000000000ull);
+  ts.tv_nsec = (long)(ns % 1000000000ull);
+  while (nanosleep(&ts, &ts) != 0) {
+  }
+}
+
+// Fast-forward pacing: one DS frame every period (from a running deadline, so short
+// sleeps don't add up to a slower speed)
+static void PaceVBlank(u64 period) {
+  const u64 now = SIM_NowNs();
+  if (sNextVBlankNs == 0 || now > sNextVBlankNs + 100000000ull) {
+    sNextVBlankNs = now; // just started, or fell far behind: no catching up
+  }
+  sNextVBlankNs += period;
+  if (sNextVBlankNs > now) {
+    PreciseSleepNs(sNextVBlankNs - now);
+  }
+}
+
 extern "C" void SIM_SkipNextFrame(void) {
   sSkipNextFrame = true;
 }
@@ -324,7 +372,6 @@ WIN_snd_channel_info win_sndi_channels[16] = {0};
 WIN_snd_alarm_info win_snd_alarms[32] = {0};
 SNDSharedWork *win_SNDi_SharedWork;
 
-static bool sFastForward = false;
 
 OSIrqFunction OS_IRQTable[OS_IRQ_TABLE_MAX] = {
     OS_IrqDummy, // VBlank (for ARM9)
@@ -1116,6 +1163,13 @@ static void DrawEngine(BOOL isSub) {
 }
 
 static void HandleJoystickKeyDown(int aKey) {
+  if (aKey == s_SIM_config.padSettings.fastForwardJoyKey && aKey != SIM_CONFIG_JOY_INVALID_KEY) {
+    if (!sFastForwardJoyDown) {
+      sFastForwardJoyDown = true;
+      FastForwardButton(true);
+    }
+    return;
+  }
   if (aKey == s_SIM_config.padSettings.aJoyKey) {
     // A Button
     s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111111111110;
@@ -1190,6 +1244,13 @@ static int TranslateAndroidDpadButton(int aKey) {
 #endif
 
 static void HandleJoystickKeyUp(int aKey) {
+  if (aKey == s_SIM_config.padSettings.fastForwardJoyKey && aKey != SIM_CONFIG_JOY_INVALID_KEY) {
+    if (sFastForwardJoyDown) {
+      sFastForwardJoyDown = false;
+      FastForwardButton(false);
+    }
+    return;
+  }
   if (aKey == s_SIM_config.padSettings.aJoyKey) {
     // A Button
     s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000000000001;
@@ -1273,7 +1334,18 @@ void *SIM_Render(void *arg) {
 #endif
     // A frame the game will replace before it's seen (SIM_SkipNextFrame) isn't drawn: the
     // game still runs, with its input and vblank handlers
-    const bool present = !(sSkipNextFrame && !SIM::GUI::IsGameLogicPaused());
+    const bool paused = SIM::GUI::IsGameLogicPaused();
+    const bool fastForward = SIM_IsFastForwarding() && !paused;
+    if (fastForward != sFastForwardSwap) {
+      // Fast-forward doesn't wait for the display's refresh
+      sFastForwardSwap = fastForward;
+      SDL_GL_SetSwapInterval(fastForward ? 0 : s_SIM_config.vsyncInterval);
+      sNextVBlankNs = 0;
+    }
+    bool present = !(sSkipNextFrame && !paused);
+    if (fastForward && SIM_NowNs() - sLastPresentNs < 15000000ull) {
+      present = false; // about 60 frames a second shown, whatever the speed
+    }
     sSkipNextFrame = false;
     sVBlanksThisSecond++;
     // SIM_Net_Process();
@@ -1456,20 +1528,14 @@ void *SIM_Render(void *arg) {
           // Toggle Debug GUI
           SIM::GUI::Toggle();
         } else if (keyRead == s_SIM_config.padSettings.frameCapToggleKey) {
-          // Toggle Frame Cap
-          if (s_SIM_config.capFrameRate) {
-            s_SIM_config.capFrameRate = false;
-            s_SIM_config.vsyncInterval = 0; // VSync Off
-          } else {
-            s_SIM_config.capFrameRate = true;
-            s_SIM_config.vsyncInterval = 1; // Every V-Blank
+          // Fast-forward on or off
+          if (!Event.key.repeat) {
+            sFastForwardOn = !sFastForwardOn;
           }
-
-          SDL_GL_SetSwapInterval(s_SIM_config.vsyncInterval);
-          
         } else if(keyRead == s_SIM_config.padSettings.frameCapKey) {
-          sFastForward = true;
-          SDL_GL_SetSwapInterval(0);
+          if (!Event.key.repeat) {
+            FastForwardButton(true);
+          }
         }
       }
       if (Event.type == SDL_KEYUP) {
@@ -1513,7 +1579,7 @@ void *SIM_Render(void *arg) {
           // Select button
           s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000000000100;
         } else if(keyRead == s_SIM_config.padSettings.frameCapKey) {
-          sFastForward = false;
+          FastForwardButton(false);
           SDL_GL_SetSwapInterval(s_SIM_config.vsyncInterval);
         }
       }
@@ -1816,7 +1882,11 @@ void *SIM_Render(void *arg) {
 #endif
 
     // Limit framerate to 60 fps
-    if (s_SIM_config.capFrameRate && !sFastForward) {
+    if (fastForward) {
+      if (s_SIM_config.fastForwardSpeed > 0 && s_SIM_config.capFrameRate) {
+        PaceVBlank(16666667ull / s_SIM_config.fastForwardSpeed);
+      }
+    } else if (s_SIM_config.capFrameRate) {
 
       // 60 Fps
       if (frameNs < 16600000) {
@@ -1833,8 +1903,9 @@ void *SIM_Render(void *arg) {
       SIM_Smooth(&sTimings.capWaitMs, beforeSwapNs - sBeforeWaitNs);
 
       SDL_GL_SwapWindow(window);
+      sLastPresentNs = SIM_NowNs();
 
-      SIM_Smooth(&sTimings.swapMs, SIM_NowNs() - beforeSwapNs);
+      SIM_Smooth(&sTimings.swapMs, sLastPresentNs - beforeSwapNs);
       NextLayerSet();
       sShownThisSecond++;
     }

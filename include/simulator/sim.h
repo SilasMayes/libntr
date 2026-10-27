@@ -106,6 +106,13 @@ void SIM_GetFrameTimings(SIM_FrameTimings *out);
 // 30 Hz: the frame after the next one is the one that matters), so it isn't drawn or
 // shown. The game still runs with its input and vblank handlers as usual.
 void SIM_SkipNextFrame(void);
+
+// Fast-forward: the game runs several DS frames per frame shown (FastForwardSpeed times
+// the normal speed, or as fast as it goes). On while its button is held, or switched on
+// and off by it (FastForwardToggle), or by the game (SIM_SetFastForward, e.g. a button
+// in its own UI).
+BOOL SIM_IsFastForwarding(void);
+void SIM_SetFastForward(BOOL on);
 const char * SIM_GetLibntrGitHash();
 const char * SIM_GetProjectGitHash();
 SDL_Window * SIM_GetSDLWindow();

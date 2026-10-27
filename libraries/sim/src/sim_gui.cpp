@@ -95,6 +95,30 @@ static bool MenuActive() {
     return SIM::Settings::IsOpen() || SIM_Carts_UIActive();
 }
 
+// Fast-forward is on: a mark in the top-right corner of the main window
+static void FastForwardIndicator() {
+    if (!SIM_IsFastForwarding()) {
+        return;
+    }
+    char text[32];
+    const int speed = SIM_GetConfigPtr()->fastForwardSpeed;
+    if (speed > 0) {
+        snprintf(text, sizeof(text), ">> %dx", speed);
+    } else {
+        snprintf(text, sizeof(text), ">> max");
+    }
+    ImFont *font = SIM::UI::BoldFont();
+    const float px = SIM::UI::S(18.0f);
+    const float pad = SIM::UI::S(8.0f);
+    ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+    const float right = ImGui::GetIO().DisplaySize.x - SIM::UI::S(10.0f);
+    const float top = SIM::UI::S(10.0f);
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(ImVec2(right - size.x - pad * 2, top), ImVec2(right, top + size.y + pad), IM_COL32(0, 0, 0, 150),
+                        SIM::UI::S(8.0f));
+    draw->AddText(font, px, ImVec2(right - size.x - pad, top + pad * 0.5f), IM_COL32(255, 255, 255, 235), text);
+}
+
 // Settings > Advanced > Frame timings on screen: where each frame's time goes, over the
 // game (top-left corner of the main window)
 static void PerfOverlay() {
@@ -157,6 +181,7 @@ void Main() {
     PrjOverlay();
     if (!MenuActive()) {
         PerfOverlay();
+        FastForwardIndicator();
     }
 
     if (SIM::Settings::IsOpen()) {
