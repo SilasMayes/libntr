@@ -113,6 +113,15 @@ int SIM_GetInternalScale(void);
 int SIM_AntiAliasingMaxSamples(void);
 int SIM_AntiAliasingSamples(void);
 
+// Widescreen (the Widescreen setting, experimental): with the top screen on its own display,
+// the scenes the game marks as able to (SIM_SetWidescreenScene, every frame) show the 3D
+// scene as wide as that display, with the 2D layers kept 4:3 in the middle. While
+// SIM_IsWidescreenActive(), the game widens its camera's projection by SIM_WidescreenRatio()
+// (the 3D scene's width over the DS screen's). Both change only between frames.
+void SIM_SetWidescreenScene(BOOL wide);
+BOOL SIM_IsWidescreenActive(void);
+float SIM_WidescreenRatio(void);
+
 // The DS clock (RTC) the game reads: the device's local time plus this many seconds
 void SIM_SetClockOffset(long long seconds);
 long long SIM_GetClockOffset(void);

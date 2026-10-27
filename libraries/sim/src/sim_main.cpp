@@ -698,12 +698,34 @@ extern "C" int SIM_AntiAliasingSamples(void) {
   return sSamples;
 }
 
+// Widescreen: the 3D framebuffer is as wide as the top display (sWideWidth, in DS pixels at
+// the DS screen's height) while the setting is on; the scenes the game marks get a 3D
+// viewport that wide (latched at the end of SIM_Render, for the 3D drawn until the next one)
+static BOOL sWideRequested = FALSE;
+static bool sWideActive = false;
+static int sWide3dWidth = SIM_NDS_SCREEN_WIDTH; // the 3D being drawn: its width
+static int sWideWidth = SIM_NDS_SCREEN_WIDTH;   // the top display's
+static int sFboWidth = SIM_NDS_SCREEN_WIDTH;    // the 3D framebuffer's
+
+extern "C" void SIM_SetWidescreenScene(BOOL wide) {
+  sWideRequested = wide;
+}
+
+extern "C" BOOL SIM_IsWidescreenActive(void) {
+  return sWideActive ? TRUE : FALSE;
+}
+
+extern "C" float SIM_WidescreenRatio(void) {
+  return sWideActive ? (float)sWide3dWidth / (float)SIM_NDS_SCREEN_WIDTH : 1.0f;
+}
+
 // (Re)creates the 3D framebuffer's storage at the wanted scale and anti-aliasing; leaves
 // the 3D framebuffer bound
 void SIM_SetInternalResolution(int internalRes) {
   (void)internalRes;
   sScale = WantedScale();
-  const int width = SIM_NDS_SCREEN_WIDTH * sScale;
+  sFboWidth = s_SIM_config.widescreen ? sWideWidth : SIM_NDS_SCREEN_WIDTH;
+  const int width = sFboWidth * sScale;
   const int height = SIM_NDS_SCREEN_HEIGHT * 2 * sScale;
 
   glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
@@ -1224,6 +1246,14 @@ static void DrawEngine(BOOL isSub) {
                      glGetUniformLocation(g2shaderProgramID, "bg0as3d"),
                      bg0as3d);
 
+  // Widescreen: the 3D engine on the top screen shows the whole wide scene, its 2D layers in
+  // the middle; otherwise the 3D scene is the left DS screen's width of its framebuffer
+  const bool wideHere = sWideActive && !isSub && topScreen;
+  glProgramUniform1f(g2shaderProgramID, glGetUniformLocation(g2shaderProgramID, "wideRatio"),
+                     wideHere ? (float)sWide3dWidth / (float)SIM_NDS_SCREEN_WIDTH : 1.0f);
+  glProgramUniform1f(g2shaderProgramID, glGetUniformLocation(g2shaderProgramID, "tex3dScaleS"),
+                     (float)(wideHere ? sWide3dWidth : SIM_NDS_SCREEN_WIDTH) / (float)sFboWidth);
+
   // Pass master bright info to the shader
   float masterBrightFactor = isSub
                                  ? (float)(s_reg_GXS_DB_MASTER_BRIGHT & 0b11111)
@@ -1478,6 +1508,24 @@ void *SIM_Render(void *arg) {
     }
     if (dualScreen) {
       aspectRatio = 256.0f / 192.0f;
+      if (sWideActive && !s_SIM_config.swapScreens) {
+        aspectRatio = (float)sWide3dWidth / 192.0f;
+      }
+
+      // Widescreen: the top display's width at the DS screen's height, even, up to 2:1
+      if (!s_SIM_config.swapScreens && windowHeight > 0) {
+        int wide = (int)((float)SIM_NDS_SCREEN_HEIGHT * (float)windowWidth / (float)windowHeight / 2.0f + 0.5f) * 2;
+        wide = wide < SIM_NDS_SCREEN_WIDTH ? SIM_NDS_SCREEN_WIDTH : (wide > SIM_NDS_SCREEN_HEIGHT * 2 ? SIM_NDS_SCREEN_HEIGHT * 2 : wide);
+        if (wide != sWideWidth) {
+          sWideWidth = wide;
+          if (s_SIM_config.widescreen) {
+            SIM_SetInternalResolutionAfterRender(0);
+          }
+        }
+      }
+    }
+    if ((s_SIM_config.widescreen ? sWideWidth : SIM_NDS_SCREEN_WIDTH) != sFboWidth) {
+      SIM_SetInternalResolutionAfterRender(0); // the setting changed
     }
 
     FitViewport(windowWidth, windowHeight, aspectRatio, &viewX, &viewY,
@@ -2060,11 +2108,23 @@ void *SIM_Render(void *arg) {
   glBindFramebuffer(GL_FRAMEBUFFER, g3FrameBuffer);
   glBindRenderbuffer(GL_RENDERBUFFER, g3RenderBufferId);
 
+  // Widescreen for the 3D drawn until the next frame: the game asks, the top screen is on its
+  // own display and shows the 3D engine
+  {
+    const bool wide = s_SIM_config.widescreen && sWideRequested && SIM_Display_SecondaryActive() &&
+                      !s_SIM_config.swapScreens && (s_reg_GX_POWCNT >> 15) && sFboWidth > SIM_NDS_SCREEN_WIDTH;
+    if (wide != sWideActive) {
+      printf("Widescreen: %s\n", wide ? "on" : "off");
+    }
+    sWideActive = wide;
+    sWide3dWidth = wide ? sFboWidth : SIM_NDS_SCREEN_WIDTH;
+  }
+
   // Setup 3D Viewport
   if (s_reg_GX_POWCNT >> 15) {
-    glViewport(0, SIM_NDS_SCREEN_HEIGHT * sScale, SIM_NDS_SCREEN_WIDTH * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
+    glViewport(0, SIM_NDS_SCREEN_HEIGHT * sScale, sWide3dWidth * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
   } else {
-    glViewport(0, 0, SIM_NDS_SCREEN_WIDTH * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
+    glViewport(0, 0, sWide3dWidth * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
   }
 
   // Activate 3D shader

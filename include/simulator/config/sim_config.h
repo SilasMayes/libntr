@@ -55,6 +55,7 @@ typedef struct {
 typedef struct {
     u32 internalResolutionScale; /* 3D rendering internal resolution scale factor (0: match the screen) */
     u8 antiAliasing; /* 3D anti-aliasing samples: 0 (off), 2 or 4 */
+    u8 widescreen; /* The top screen as wide as the display where the game allows (SIM_SetWidescreenScene) */
     u32 windowWidth; /* Initial width of the window. If set to 0, will use the default width for the screen layout */
     u32 windowHeight; /* Initial height of the window. If set to 0, will use default height for the screen layout */
     u8 fullScreen; /* TRUE to enable fullscreen */

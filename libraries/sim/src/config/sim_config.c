@@ -59,6 +59,9 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "AntiAliasing")) {
         config->antiAliasing = (u8)atoi(value);
     }
+    if(MATCH("General", "Widescreen")) {
+        config->widescreen = StringToBool(value);
+    }
     if(MATCH("General", "WindowHeight")) {
         config->windowHeight = atoi(value);
     }
@@ -404,6 +407,7 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->capFrameRate = TRUE;
     aConfig->perfOverlay = FALSE;
     aConfig->antiAliasing = 0;
+    aConfig->widescreen = FALSE;
     aConfig->fastForwardSpeed = 4;
     aConfig->fastForwardToggle = FALSE;
     aConfig->masterVolume = 127;
@@ -489,6 +493,7 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "[General]\n");
     fprintf(configFile, "InternalResolutionScale=%d\n", aConfig->internalResolutionScale);
     fprintf(configFile, "AntiAliasing=%d\n", aConfig->antiAliasing);
+    fprintf(configFile, "Widescreen=%s\n", BoolToString(aConfig->widescreen));
     fprintf(configFile, "WindowHeight=%d\n", aConfig->windowHeight);
     fprintf(configFile, "WindowWidth=%d\n", aConfig->windowWidth);
     fprintf(configFile, "FullScreen=%s\n", BoolToString(aConfig->fullScreen));

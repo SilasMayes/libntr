@@ -15,6 +15,11 @@ uniform vec4 backdropColor;
 uniform int dispcnt;
 uniform int winout;
 uniform int bg0as3d;
+// Widescreen: the screen is wideRatio DS screens wide; the 2D layers stay in its middle
+// and the 3D scene (bg0as3d) fills it. tex3dScaleS: how much of the 3D texture's width
+// this screen's 3D uses.
+uniform float wideRatio;
+uniform float tex3dScaleS;
 
 smooth in vec2 fragTexCoord;
 //uniform float inAlpha;
@@ -37,17 +42,24 @@ void main()
     }
     // Fetch every layer once, with constant sampler indices. Indexing sampler
     // arrays with non-uniform values is undefined in GLSL (and breaks on GLES).
+    vec2 c2d = vec2((fragTexCoord.s - 0.5) * wideRatio + 0.5, fragTexCoord.t);
+    bool inside2d = c2d.s >= 0.0 && c2d.s <= 1.0;
+    vec4 none = vec4(0.0);
     vec4 bgc[4];
-    bgc[0] = texture(bgTexture[0], fragTexCoord);
-    bgc[1] = texture(bgTexture[1], fragTexCoord);
-    bgc[2] = texture(bgTexture[2], fragTexCoord);
-    bgc[3] = texture(bgTexture[3], fragTexCoord);
+    if (bg0as3d != 0) {
+        bgc[0] = texture(bgTexture[0], vec2(fragTexCoord.s * tex3dScaleS, fragTexCoord.t));
+    } else {
+        bgc[0] = inside2d ? texture(bgTexture[0], c2d) : none;
+    }
+    bgc[1] = inside2d ? texture(bgTexture[1], c2d) : none;
+    bgc[2] = inside2d ? texture(bgTexture[2], c2d) : none;
+    bgc[3] = inside2d ? texture(bgTexture[3], c2d) : none;
     vec4 objc[4];
-    objc[0] = texture(objTexture[0], fragTexCoord);
-    objc[1] = texture(objTexture[1], fragTexCoord);
-    objc[2] = texture(objTexture[2], fragTexCoord);
-    objc[3] = texture(objTexture[3], fragTexCoord);
-    vec4 objWin = texture(objWindowTexture, fragTexCoord);
+    objc[0] = inside2d ? texture(objTexture[0], c2d) : none;
+    objc[1] = inside2d ? texture(objTexture[1], c2d) : none;
+    objc[2] = inside2d ? texture(objTexture[2], c2d) : none;
+    objc[3] = inside2d ? texture(objTexture[3], c2d) : none;
+    vec4 objWin = inside2d ? texture(objWindowTexture, c2d) : none;
     for(int i=0; i<4; i++) {
         int bgNum = bgOrder[i];
         int curPrio = bgPriorities[bgNum];

@@ -106,6 +106,14 @@ void DrawDisplay() {
     SaveConfig();
   }
 
+  bool wide = config->widescreen != FALSE;
+  if (Toggle("Widescreen (experimental)", "Where the game allows it (the overworld in clear weather), the 3D scene "
+             "fills the whole top display instead of a 4:3 box. Text boxes and menus stay 4:3 in the middle. Needs "
+             "the bottom screen on its own display.", &wide)) {
+    config->widescreen = wide ? TRUE : FALSE;
+    SaveConfig();
+  }
+
 #ifndef SDK_BUILD_ANDROID
   bool fullScreen = config->fullScreen != 0;
   if (Toggle("Full screen", nullptr, &fullScreen)) {
