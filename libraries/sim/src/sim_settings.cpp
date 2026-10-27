@@ -36,6 +36,7 @@ bool sOpen = false;
 int sPage = 0;          // the page shown
 bool sShowList = true;  // narrow screens: the list of pages instead of a page
 bool sFocusPage = false; // wide screens: the pad's cursor goes into the page
+bool sPageMayTakeBack = false; // B can go back inside the page being drawn (PageBack)
 
 void EnsurePages();
 
@@ -310,6 +311,10 @@ bool IsOpen() {
   return sOpen;
 }
 
+bool PageBack() {
+  return sPageMayTakeBack && TakeBack();
+}
+
 bool CaptureEvent(const void *sdlEvent) {
   if (!sOpen || sCaptureTarget == nullptr) {
     return false;
@@ -423,7 +428,9 @@ void Draw() {
       FocusNextItem();
       sFocusPage = false;
     }
+    sPageMayTakeBack = !capturing && !sidebarFocused;
     DrawPage(page);
+    sPageMayTakeBack = false;
     EndPane();
     ImGui::PopID();
 
@@ -457,7 +464,9 @@ void Draw() {
     const Page &page = sPages[sPage];
     ImGui::PushID(page.name.c_str());
     backToList = BeginPane("##page", ImVec2(0, 0), io.DisplaySize, page.name.c_str(), "Settings", S(640.0f));
+    sPageMayTakeBack = !capturing;
     DrawPage(page);
+    sPageMayTakeBack = false;
     EndPane();
     ImGui::PopID();
     backToList = backToList || (!capturing && BackPressed());

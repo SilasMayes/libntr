@@ -54,6 +54,18 @@ bool ListItem(const char *label, bool selected);
 // Two buttons side by side; returns 1 or 2 for the one pressed, 0 for none
 int ButtonPair(const char *left, const char *right, bool leftPrimary = false, bool leftEnabled = true,
                bool rightEnabled = true);
+// A number from min to max: - and + buttons, and a keypad that opens when the value is
+// tapped (B or Cancel closes it without a change)
+bool NumberField(const char *label, const char *help, int *value, int min, int max, bool enabled = true);
+// A small "<  label" button on its own line, for going back from a view inside a page
+bool BackButton(const char *label);
+// A card that only shows text
+void Panel(const char *title, const char *text);
+// Tiles: small buttons in rows of perRow filling the width (height 0: fits the text). id
+// tells groups of tiles apart.
+void BeginTiles(const char *id, int perRow, float height = 0.0f);
+bool Tile(const char *label, const char *sub = nullptr, bool selected = false, bool enabled = true);
+void EndTiles();
 void Space(float px = 8.0f);
 
 // The item just drawn is where the pad's cursor goes when the screen opens, or after
@@ -74,6 +86,8 @@ bool LastItemFocused();
 // 3 Start, 4 Right, 5 Left, 6 Up, 7 Down, 8 R, 9 L)
 bool PadPressed(int bit);
 bool BackPressed(); // B
+// B was pressed: it goes back in what's drawn now, and what's drawn after doesn't see it
+bool TakeBack();
 
 // libntr internals
 void Init();               // with the main ImGui context current, after the GUI's own init

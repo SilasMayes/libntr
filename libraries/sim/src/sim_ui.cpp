@@ -10,6 +10,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 extern "C" void __attribute__((weak)) SIM_Prj_UIFont(const void **regular, int *regularSize, const void **bold,
@@ -233,6 +234,14 @@ bool PadPressed(int bit) {
 
 bool BackPressed() {
   return PadPressed(1);
+}
+
+bool TakeBack() {
+  if (!PadPressed(1)) {
+    return false;
+  }
+  sPressed &= (u16)~(1 << 1);
+  return true;
 }
 
 bool IsDragging() {
@@ -726,6 +735,303 @@ bool ListItem(const char *label, bool selected) {
   ImGui::SetCursorScreenPos(ImVec2(pos.x, max.y));
   ImGui::Dummy(ImVec2(width, S(4.0f)));
   return Tapped(pressed);
+}
+
+// --- numbers, tiles, views inside pages -----------------------------------------------------
+
+namespace {
+
+// The keypad of a NumberField (one at a time)
+ImGuiID sKeypadId = 0;
+char sKeypadText[12] = "";
+bool sKeypadFresh = true;  // the next digit replaces the text
+bool sKeypadFocus = false; // the pad's cursor goes to its first key
+ImGuiID sKeypadReturn = 0; // closed: the pad's cursor goes back to the value
+int sKeypadFrame = -1;     // the last frame it was drawn
+
+int Digits(int value) {
+  int digits = 1;
+  for (value = value < 0 ? -value : value; value >= 10; value /= 10) {
+    digits++;
+  }
+  return digits;
+}
+
+void CloseKeypad() {
+  sKeypadReturn = sKeypadId;
+  sKeypadId = 0;
+}
+
+bool KeyButton(const char *label, ImVec2 pos, ImVec2 size, bool primary) {
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  ImGui::SetCursorScreenPos(pos);
+  bool pressed = InvisibleItem(label, size, true);
+  bool held = ImGui::IsItemActive() && !sDragging;
+  ImVec2 max(pos.x + size.x, pos.y + size.y);
+  ImU32 fill = primary ? (held ? kAccentPressed : kAccent) : (held ? kPanelPressed : (Hovered() ? kPanelHover : kBackground));
+  draw->AddRectFilled(pos, max, fill, S(10.0f));
+  const float px = label[1] == '\0' ? S(20.0f) : S(15.0f);
+  ImVec2 textSize = Measure(BoldFont(), px, label);
+  Text(draw, BoldFont(), px, ImVec2(pos.x + (size.x - textSize.x) * 0.5f, pos.y + (size.y - textSize.y) * 0.5f),
+       primary ? kOnAccent : kText, label);
+  FocusRing(pos, max);
+  return Tapped(pressed);
+}
+
+ImVec2 sTilesPos;
+float sTilesWidth = 0.0f;
+float sTilesHeight = 0.0f;
+int sTilesPerRow = 1;
+int sTilesIndex = 0;
+
+} // namespace
+
+bool NumberField(const char *label, const char *help, int *value, int min, int max, bool enabled) {
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  const float width = ImGui::GetContentRegionAvail().x;
+  const float pad = S(14.0f);
+  const float gap = S(6.0f);
+  const float buttonW = S(50.0f), buttonH = S(42.0f), valueW = S(100.0f);
+  const float controlsW = buttonW * 2 + valueW + gap * 2;
+  const float textWidth = width - pad * 3 - controlsW;
+  const float textHeight = RowText(draw, ImVec2(0, 0), textWidth, label, help, enabled, true);
+  const float rowH = textHeight + pad * 2 > S(64.0f) ? textHeight + pad * 2 : S(64.0f);
+
+  ImGui::PushID(label);
+  const ImGuiID id = ImGui::GetID("##number");
+  const int frame = ImGui::GetFrameCount();
+  if (sKeypadId == id && sKeypadFrame < frame - 1) {
+    sKeypadId = 0; // it went away (another view) and came back
+  }
+  const bool open = enabled && sKeypadId == id;
+  const float keyH = S(50.0f), rangeH = S(26.0f);
+  const float keypadW = width - pad * 2 < S(440.0f) ? width - pad * 2 : S(440.0f);
+  const float keypadH = open ? rangeH + keyH * 4 + gap * 3 + pad : 0.0f;
+  const float height = rowH + keypadH;
+  ImVec2 pos = ImGui::GetCursorScreenPos();
+
+  draw->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), kPanel, S(kRounding));
+  RowText(draw, ImVec2(pos.x + pad, pos.y + (rowH - textHeight) * 0.5f), textWidth, label, help, enabled, false);
+
+  bool changed = false;
+  ImVec2 controls(pos.x + width - pad - controlsW, pos.y + (rowH - buttonH) * 0.5f);
+  // The value first: the pad's cursor goes to it (FocusNextItem)
+  for (int side : { 1, 0, 2 }) {
+    const float x = side == 0 ? controls.x : (side == 1 ? controls.x + buttonW + gap : controls.x + buttonW + valueW + gap * 2);
+    const float w = side == 1 ? valueW : buttonW;
+    ImVec2 bp(x, controls.y), bmax(x + w, controls.y + buttonH);
+    ImGui::SetCursorScreenPos(bp);
+    ImGui::PushID(side);
+    if (side == 1) {
+      bool pressed = InvisibleItem("##value", ImVec2(w, buttonH), enabled);
+      if (sKeypadReturn == id) {
+        ImGui::SetFocusID(GImGui->LastItemData.ID, ImGui::GetCurrentWindow());
+        sKeypadReturn = 0;
+      }
+      bool held = ImGui::IsItemActive() && !sDragging;
+      draw->AddRectFilled(bp, bmax, held ? kPanelPressed : (Hovered() ? kPanelHover : kBackground), S(10.0f));
+      if (open) {
+        draw->AddRect(bp, bmax, kAccent, S(10.0f), 0, S(2.0f));
+      }
+      char text[24];
+      if (open) {
+        snprintf(text, sizeof(text), "%s", sKeypadText[0] != '\0' ? sKeypadText : "-");
+      } else {
+        snprintf(text, sizeof(text), "%d", *value);
+      }
+      ImVec2 size = Measure(BoldFont(), S(18.0f), text);
+      Text(draw, BoldFont(), S(18.0f), ImVec2(bp.x + (w - size.x) * 0.5f, bp.y + (buttonH - size.y) * 0.5f),
+           enabled ? (open ? kAccent : kText) : kTextOff, text);
+      FocusRing(bp, bmax);
+      if (Tapped(pressed) && enabled) {
+        if (open) {
+          CloseKeypad();
+        } else {
+          sKeypadId = id;
+          snprintf(sKeypadText, sizeof(sKeypadText), "%d", *value);
+          sKeypadFresh = true;
+          sKeypadFocus = true;
+          sKeypadFrame = frame;
+        }
+      }
+    } else {
+      const bool can = enabled && (side == 0 ? *value > min : *value < max);
+      ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true); // holding repeats
+      bool pressed = InvisibleItem("##step", ImVec2(w, buttonH), can);
+      ImGui::PopItemFlag();
+      bool held = ImGui::IsItemActive() && !sDragging;
+      draw->AddRectFilled(bp, bmax, held ? kPanelPressed : (Hovered() ? kPanelHover : kBackground), S(10.0f));
+      const char *sign = side == 0 ? "-" : "+";
+      ImVec2 size = Measure(BoldFont(), S(24.0f), sign);
+      Text(draw, BoldFont(), S(24.0f), ImVec2(bp.x + (w - size.x) * 0.5f, bp.y + (buttonH - size.y) * 0.5f),
+           can ? kText : kTextOff, sign);
+      FocusRing(bp, bmax);
+      if (Tapped(pressed) && can) {
+        *value += side == 0 ? -1 : 1;
+        *value = *value < min ? min : (*value > max ? max : *value);
+        changed = true;
+        if (open) {
+          sKeypadId = 0;
+        }
+      }
+    }
+    ImGui::PopID();
+  }
+
+  if (open && sKeypadId == id) {
+    sKeypadFrame = frame;
+    char range[64];
+    snprintf(range, sizeof(range), "%d to %d", min, max);
+    Text(draw, RegularFont(), S(14.0f), ImVec2(pos.x + width - pad - keypadW, pos.y + rowH - S(4.0f)), kTextDim, range);
+
+    static const char *const kKeys[16] = { "7", "8", "9", "Del", "4", "5", "6", "Clear",
+                                           "1", "2", "3", "Max", "Cancel", "0", "Min", "OK" };
+    const float keyW = (keypadW - gap * 3) / 4;
+    ImVec2 keypad(pos.x + width - pad - keypadW, pos.y + rowH + rangeH - S(4.0f));
+    if (sKeypadFocus) {
+      FocusNextItem();
+      sKeypadFocus = false;
+    }
+    const size_t length = strlen(sKeypadText);
+    for (int i = 0; i < 16; i++) {
+      ImVec2 kp(keypad.x + (i % 4) * (keyW + gap), keypad.y + (i / 4) * (keyH + gap));
+      if (!KeyButton(kKeys[i], kp, ImVec2(keyW, keyH), i == 15)) {
+        continue;
+      }
+      const char *key = kKeys[i];
+      if (key[0] >= '0' && key[0] <= '9' && key[1] == '\0') {
+        if (sKeypadFresh || strcmp(sKeypadText, "0") == 0) {
+          sKeypadText[0] = '\0';
+          sKeypadFresh = false;
+        }
+        size_t n = strlen(sKeypadText);
+        if ((int)n < Digits(max) && n + 1 < sizeof(sKeypadText)) {
+          sKeypadText[n] = key[0];
+          sKeypadText[n + 1] = '\0';
+        }
+      } else if (strcmp(key, "Del") == 0) {
+        if (length > 0) {
+          sKeypadText[length - 1] = '\0';
+        }
+        sKeypadFresh = false;
+      } else if (strcmp(key, "Clear") == 0) {
+        sKeypadText[0] = '\0';
+        sKeypadFresh = false;
+      } else if (strcmp(key, "Max") == 0 || strcmp(key, "Min") == 0) {
+        snprintf(sKeypadText, sizeof(sKeypadText), "%d", key[1] == 'a' ? max : min);
+        sKeypadFresh = true;
+      } else if (strcmp(key, "Cancel") == 0) {
+        CloseKeypad();
+      } else { // OK
+        if (sKeypadText[0] != '\0') {
+          int v = atoi(sKeypadText);
+          v = v < min ? min : (v > max ? max : v);
+          if (v != *value) {
+            *value = v;
+            changed = true;
+          }
+        }
+        CloseKeypad();
+      }
+      break;
+    }
+    if (sKeypadId == id && TakeBack()) {
+      CloseKeypad();
+    }
+  }
+  ImGui::PopID();
+  EndRow(pos, width, height);
+  return changed;
+}
+
+bool BackButton(const char *label) {
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  const float width = ImGui::GetContentRegionAvail().x;
+  char text[96];
+  snprintf(text, sizeof(text), "<  %s", label);
+  ImVec2 textSize = Measure(BoldFont(), S(16.0f), text);
+  ImVec2 size(textSize.x + S(28.0f), S(42.0f));
+  ImVec2 pos = ImGui::GetCursorScreenPos();
+  ImVec2 max(pos.x + size.x, pos.y + size.y);
+
+  ImGui::PushID(label);
+  ImGui::PushItemFlag(ImGuiItemFlags_NoNavDefaultFocus, true); // the pad starts on the content (B is back)
+  bool pressed = InvisibleItem("##back", size, true);
+  ImGui::PopItemFlag();
+  ImGui::PopID();
+  bool held = ImGui::IsItemActive() && !sDragging;
+  draw->AddRectFilled(pos, max, held ? kPanelPressed : (Hovered() ? kPanelHover : kPanel), S(10.0f));
+  Text(draw, BoldFont(), S(16.0f), ImVec2(pos.x + S(14.0f), pos.y + (size.y - textSize.y) * 0.5f), kText, text);
+  FocusRing(pos, max);
+  ImGui::SetCursorScreenPos(ImVec2(pos.x, max.y));
+  ImGui::Dummy(ImVec2(width, S(8.0f)));
+  return Tapped(pressed);
+}
+
+void Panel(const char *title, const char *text) {
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  const float width = ImGui::GetContentRegionAvail().x;
+  const float pad = S(14.0f);
+  const float textHeight = RowText(draw, ImVec2(0, 0), width - pad * 2, title, text, true, true);
+  const float height = textHeight + pad * 2;
+  ImVec2 pos = ImGui::GetCursorScreenPos();
+  draw->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), kPanel, S(kRounding));
+  RowText(draw, ImVec2(pos.x + pad, pos.y + pad), width - pad * 2, title, text, true, false);
+  EndRow(pos, width, height);
+}
+
+void BeginTiles(const char *id, int perRow, float height) {
+  ImGui::PushID(id);
+  sTilesPos = ImGui::GetCursorScreenPos();
+  sTilesWidth = ImGui::GetContentRegionAvail().x;
+  sTilesPerRow = perRow < 1 ? 1 : perRow;
+  sTilesHeight = height > 0.0f ? height : S(56.0f);
+  sTilesIndex = 0;
+}
+
+bool Tile(const char *label, const char *sub, bool selected, bool enabled) {
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  const float gap = S(6.0f);
+  const int column = sTilesIndex % sTilesPerRow, row = sTilesIndex / sTilesPerRow;
+  const float w = (sTilesWidth - gap * (sTilesPerRow - 1)) / sTilesPerRow;
+  const float h = sTilesHeight;
+  ImVec2 pos(sTilesPos.x + column * (w + gap), sTilesPos.y + row * (h + gap));
+  ImVec2 max(pos.x + w, pos.y + h);
+
+  ImGui::SetCursorScreenPos(pos);
+  ImGui::PushID(sTilesIndex);
+  bool pressed = InvisibleItem("##tile", ImVec2(w, h), enabled);
+  ImGui::PopID();
+  sTilesIndex++;
+  bool held = ImGui::IsItemActive() && !sDragging;
+  ImU32 fill = selected ? (held ? kAccentPressed : kAccent) : RowColor(held, Hovered());
+  draw->AddRectFilled(pos, max, fill, S(10.0f));
+
+  const float labelPx = S(15.0f), subPx = S(13.0f);
+  const bool hasSub = sub != nullptr && sub[0] != '\0';
+  ImVec2 labelSize = Measure(BoldFont(), labelPx, label);
+  ImVec2 subSize = hasSub ? Measure(RegularFont(), subPx, sub) : ImVec2(0, 0);
+  const float total = labelSize.y + (hasSub ? S(2.0f) + subSize.y : 0.0f);
+  float y = pos.y + (h - total) * 0.5f;
+  draw->PushClipRect(ImVec2(pos.x + S(4.0f), pos.y), ImVec2(max.x - S(4.0f), max.y), true);
+  const ImU32 textColor = selected ? kOnAccent : (enabled ? kText : kTextOff);
+  Text(draw, BoldFont(), labelPx, ImVec2(pos.x + (w - labelSize.x) * 0.5f, y), textColor, label);
+  if (hasSub) {
+    Text(draw, RegularFont(), subPx, ImVec2(pos.x + (w - subSize.x) * 0.5f, y + labelSize.y + S(2.0f)),
+         selected ? IM_COL32(12, 20, 30, 200) : (enabled ? kTextDim : kTextOff), sub);
+  }
+  draw->PopClipRect();
+  FocusRing(pos, max);
+  return Tapped(pressed) && enabled;
+}
+
+void EndTiles() {
+  const float gap = S(6.0f);
+  const int rows = (sTilesIndex + sTilesPerRow - 1) / sTilesPerRow;
+  const float total = rows > 0 ? rows * sTilesHeight + (rows - 1) * gap : 0.0f;
+  ImGui::SetCursorScreenPos(ImVec2(sTilesPos.x, sTilesPos.y + total));
+  ImGui::Dummy(ImVec2(sTilesWidth, S(8.0f)));
+  ImGui::PopID();
 }
 
 } // namespace SIM::UI

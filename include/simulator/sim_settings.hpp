@@ -15,6 +15,10 @@ namespace SIM::Settings {
 // name appends draw() to it instead.
 void AddPage(const char *name, const char *summary, void (*draw)(), int order);
 
+// For a page with views of its own (an entry opened from a list, a picker): B was pressed
+// and goes back a view in the page (rather than out of it). Call from the page's draw().
+bool PageBack();
+
 void Open(const char *page = nullptr);
 void Close();
 bool IsOpen();
