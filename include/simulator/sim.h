@@ -82,8 +82,30 @@ typedef struct SIM_FrameTimings {
     float drawMs;      // compositing both screens, GUI
     float capWaitMs;   // frame limiter sleep
     float swapMs;      // buffer swap (vsync wait, driver)
+
+    // Parts of drawMs
+    float g2Ms;        // 2D layers (sprites, backgrounds) drawn on the CPU
+    float uploadMs;    // 2D layers sent to the GPU
+    float secondaryMs; // the second display's output (DS screen, companion UI), CPU side
+    float companionMs;     // part of it: the companion UI
+    float secondarySwapMs; // part of it: showing it (buffer swap, back to the main window)
+    float guiMs;       // menus and overlays (Dear ImGui)
+
+    // GPU time per shown frame, from timer queries (negative: not available)
+    float gpu3dMs;        // the 3D scene
+    float gpuMainMs;      // the main window
+    float gpuSecondaryMs; // the second display
+
+    float shownPerSecond;   // frames shown
+    float vblanksPerSecond; // DS frames run (60 at full speed)
+    float draws3d;          // 3D draw calls per DS frame
+    float uploads2d;        // 2D layer uploads per shown frame (unchanged layers are skipped)
 } SIM_FrameTimings;
 void SIM_GetFrameTimings(SIM_FrameTimings *out);
+// The game will replace the next vblank's frame before it can be seen (its logic runs at
+// 30 Hz: the frame after the next one is the one that matters), so it isn't drawn or
+// shown. The game still runs with its input and vblank handlers as usual.
+void SIM_SkipNextFrame(void);
 const char * SIM_GetLibntrGitHash();
 const char * SIM_GetProjectGitHash();
 SDL_Window * SIM_GetSDLWindow();

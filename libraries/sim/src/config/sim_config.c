@@ -86,6 +86,9 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "CapFrameRate")) {
         config->capFrameRate = StringToBool(value);
     }
+    if(MATCH("General", "PerfOverlay")) {
+        config->perfOverlay = StringToBool(value);
+    }
 
     if(MATCH("General", "MacAddr")) {
         char * pos = value;
@@ -387,6 +390,7 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
 #endif
     aConfig->vsyncInterval = 1;
     aConfig->capFrameRate = TRUE;
+    aConfig->perfOverlay = FALSE;
     aConfig->masterVolume = 127;
 
     aConfig->padSettings.joyAxisDeadzone = 32767 / 4;
@@ -475,6 +479,7 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "SecondaryScreen=%s\n", BoolToString(aConfig->secondaryScreen));
     fprintf(configFile, "VsyncInterval=%d\n", aConfig->vsyncInterval);
     fprintf(configFile, "CapFrameRate=%s\n", BoolToString(aConfig->capFrameRate));
+    fprintf(configFile, "PerfOverlay=%s\n", BoolToString(aConfig->perfOverlay));
     fprintf(configFile, "MacAddr=%02x%02x%02x%02x%02x%02x\n", aConfig->macAddr[0],
                                                               aConfig->macAddr[1],
                                                               aConfig->macAddr[2],

@@ -33,6 +33,7 @@ void G3SIM_DrawInit();
 void G3SIM_FlushArray();
 void G3SIM_DrawItems();
 u64 G3SIM_TakeSubmitNs(); // time spent issuing 3D draws since the last call
+u32 G3SIM_TakeDrawCount(); // 3D draw calls since the last call
 
 #ifdef __cplusplus
 }

@@ -7,8 +7,11 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_system.h>
 #include <android/log.h>
+#include <dlfcn.h>
 #include <jni.h>
 #include <pthread.h>
+#include <sched.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -95,6 +98,93 @@ extern "C" void SIM_Android_Init(void) {
   } else {
     printf("Could not enter the data directory: %s\n", SDL_GetError());
   }
+}
+
+// --- CPU speed ------------------------------------------------------------------------
+
+namespace {
+
+// Performance hint sessions (NDK, Android 13): looked up at run time (the app runs on 10+)
+typedef void *(*GetManagerFn)();
+typedef void *(*CreateSessionFn)(void *, const int32_t *, size_t, int64_t);
+typedef int (*ReportWorkFn)(void *, int64_t);
+ReportWorkFn sReportWork = nullptr;
+void *sHintSession = nullptr;
+char sCpuInfo[160] = "";
+
+constexpr int64_t kFrameTargetNs = 16666667; // a 60 Hz frame
+
+int ReadCpuMaxFreq(int cpu) {
+  char path[96];
+  snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpu);
+  FILE *file = fopen(path, "r");
+  if (file == nullptr) {
+    return 0;
+  }
+  int khz = 0;
+  if (fscanf(file, "%d", &khz) != 1) {
+    khz = 0;
+  }
+  fclose(file);
+  return khz;
+}
+
+} // namespace
+
+extern "C" void SIM_Android_GameThreadStarted(void) {
+  // The fastest cores: those within 75% of the fastest one's top clock (on the Thor's
+  // Snapdragon 8 Gen 2 that leaves out only the three small efficiency cores)
+  const int cpuCount = (int)sysconf(_SC_NPROCESSORS_CONF);
+  int freqs[64] = {};
+  int fastest = 0;
+  for (int cpu = 0; cpu < cpuCount && cpu < 64; cpu++) {
+    freqs[cpu] = ReadCpuMaxFreq(cpu);
+    fastest = freqs[cpu] > fastest ? freqs[cpu] : fastest;
+  }
+  char cores[64] = "";
+  if (fastest > 0) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int chosen = 0;
+    for (int cpu = 0; cpu < cpuCount && cpu < 64; cpu++) {
+      if (freqs[cpu] >= fastest * 3 / 4) {
+        CPU_SET(cpu, &set);
+        size_t used = strlen(cores);
+        snprintf(cores + used, sizeof(cores) - used, "%s%d", chosen > 0 ? "," : "", cpu);
+        chosen++;
+      }
+    }
+    const pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (chosen == 0 || sched_setaffinity(tid, sizeof(set), &set) != 0) {
+      snprintf(cores, sizeof(cores), "any");
+    }
+  } else {
+    snprintf(cores, sizeof(cores), "any");
+  }
+
+  void *library = dlopen("libandroid.so", RTLD_NOW);
+  GetManagerFn getManager = library ? (GetManagerFn)dlsym(library, "APerformanceHint_getManager") : nullptr;
+  CreateSessionFn createSession =
+      library ? (CreateSessionFn)dlsym(library, "APerformanceHint_createSession") : nullptr;
+  sReportWork = library ? (ReportWorkFn)dlsym(library, "APerformanceHint_reportActualWorkDuration") : nullptr;
+  if (getManager != nullptr && createSession != nullptr && sReportWork != nullptr) {
+    void *manager = getManager();
+    const int32_t tid = (int32_t)syscall(SYS_gettid);
+    sHintSession = manager != nullptr ? createSession(manager, &tid, 1, kFrameTargetNs) : nullptr;
+  }
+  snprintf(sCpuInfo, sizeof(sCpuInfo), "Game thread on cores %s (top %d MHz); performance hints %s", cores,
+           fastest / 1000, sHintSession != nullptr ? "on" : "not available");
+  printf("%s\n", sCpuInfo);
+}
+
+extern "C" void SIM_Android_ReportFrameWork(long long workNs) {
+  if (sHintSession != nullptr && workNs > 0) {
+    sReportWork(sHintSession, (int64_t)workNs);
+  }
+}
+
+extern "C" const char *SIM_Android_CpuInfo(void) {
+  return sCpuInfo;
 }
 
 extern "C" void SIM_Android_RequestRomImport(void) {

@@ -163,6 +163,14 @@ void G3SIM_AddVtx(G3SIM_Vertex_t * vtx)
 }
 
 static u64 sG3SubmitNs = 0;
+static u32 sG3Draws = 0;
+
+u32 G3SIM_TakeDrawCount()
+{
+	u32 draws = sG3Draws;
+	sG3Draws = 0;
+	return draws;
+}
 
 static u64 G3SIM_NowNs()
 {
@@ -186,6 +194,7 @@ void G3SIM_DrawArray()
 		glBindBuffer(GL_ARRAY_BUFFER, s_G3DrawVertexBuffer);
 		G3SIM_UploadVerts(s_G3DrawVerts, s_G3DrawCurVertIdx);
 		glDrawArrays(GL_TRIANGLES,0,s_G3DrawCurVertIdx);
+		sG3Draws++;
 	}
 	return;
 }
@@ -469,6 +478,7 @@ void G3SIM_DrawItems()
 		glBindBuffer(GL_ARRAY_BUFFER, s_G3DrawVertexBuffer);
 		G3SIM_UploadVerts(item->verts, item->vertsCount);
 		glDrawArrays(GL_TRIANGLES,0, item->vertsCount);
+		sG3Draws++;
 
 		free(item->verts);
 	}

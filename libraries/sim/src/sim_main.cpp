@@ -116,14 +116,135 @@ static void SIM_Smooth(float *value, u64 ns) {
   *value = (*value == 0.0f) ? ms : (*value * 0.9f + ms * 0.1f);
 }
 
+static void SIM_SmoothValue(float *value, float sample) {
+  *value = (*value == 0.0f) ? sample : (*value * 0.9f + sample * 0.1f);
+}
+
 extern "C" void SIM_GetFrameTimings(SIM_FrameTimings *out) {
   *out = sTimings;
+}
+
+// A frame the game replaces before it can be seen isn't drawn (see sim.h)
+static bool sSkipNextFrame = false;
+
+extern "C" void SIM_SkipNextFrame(void) {
+  sSkipNextFrame = true;
+}
+
+// Frames shown and DS frames run per second
+static u32 sShownThisSecond = 0;
+static u32 sVBlanksThisSecond = 0;
+static u64 sRateWindowStartNs = 0;
+
+static void UpdateRates() {
+  const u64 now = SIM_NowNs();
+  if (sRateWindowStartNs == 0) {
+    sRateWindowStartNs = now;
+  }
+  const u64 elapsed = now - sRateWindowStartNs;
+  if (elapsed >= 1000000000ull) {
+    const float seconds = (float)elapsed / 1e9f;
+    sTimings.shownPerSecond = (float)sShownThisSecond / seconds;
+    sTimings.vblanksPerSecond = (float)sVBlanksThisSecond / seconds;
+    sTimings.draws3d = sVBlanksThisSecond > 0 ? (float)G3SIM_TakeDrawCount() / (float)sVBlanksThisSecond : 0.0f;
+    sShownThisSecond = 0;
+    sVBlanksThisSecond = 0;
+    sRateWindowStartNs = now;
+  }
+}
+
+// GPU time of the parts of a frame, from timer queries read back frames later (it never
+// waits for the GPU). Desktop GL has them; OpenGL ES with GL_EXT_disjoint_timer_query.
+#ifndef GL_TIME_ELAPSED
+#define GL_TIME_ELAPSED 0x88BF
+#endif
+#ifndef GL_GPU_DISJOINT_EXT
+#define GL_GPU_DISJOINT_EXT 0x8FBB
+#endif
+enum GpuPart { GPU_3D, GPU_MAIN, GPU_SECONDARY, GPU_PART_COUNT };
+static constexpr int kGpuQueryRing = 8;
+static bool sGpuTimers = false;
+static GLuint sGpuQueries[GPU_PART_COUNT][kGpuQueryRing];
+static bool sGpuQueryPending[GPU_PART_COUNT][kGpuQueryRing];
+static int sGpuQueryNext[GPU_PART_COUNT];
+static int sGpuActivePart = -1;
+
+static void GpuTimersInit() {
+  sTimings.gpu3dMs = sTimings.gpuMainMs = sTimings.gpuSecondaryMs = -1.0f;
+#ifdef SIM_GLES
+  GLint count = 0;
+  glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+  for (GLint i = 0; i < count && !sGpuTimers; i++) {
+    const char *name = (const char *)glGetStringi(GL_EXTENSIONS, i);
+    sGpuTimers = name != nullptr && strcmp(name, "GL_EXT_disjoint_timer_query") == 0;
+  }
+#else
+  sGpuTimers = true; // OpenGL 3.3+
+#endif
+  if (sGpuTimers) {
+    glGenQueries(GPU_PART_COUNT * kGpuQueryRing, &sGpuQueries[0][0]);
+    sTimings.gpu3dMs = sTimings.gpuMainMs = sTimings.gpuSecondaryMs = 0.0f;
+  }
+  while (glGetError() != GL_NO_ERROR) {
+  }
+}
+
+static void GpuTimerBegin(GpuPart part) {
+  if (!sGpuTimers || sGpuActivePart >= 0) {
+    return;
+  }
+  const int slot = sGpuQueryNext[part];
+  if (sGpuQueryPending[part][slot]) {
+    return; // that query's result isn't back yet: this frame goes unmeasured
+  }
+  glBeginQuery(GL_TIME_ELAPSED, sGpuQueries[part][slot]);
+  sGpuActivePart = part;
+}
+
+static void GpuTimerEnd() {
+  if (sGpuActivePart < 0) {
+    return;
+  }
+  glEndQuery(GL_TIME_ELAPSED);
+  const int part = sGpuActivePart;
+  const int slot = sGpuQueryNext[part];
+  sGpuQueryPending[part][slot] = true;
+  sGpuQueryNext[part] = (slot + 1) % kGpuQueryRing;
+  sGpuActivePart = -1;
+}
+
+static void GpuTimersCollect() {
+  if (!sGpuTimers) {
+    return;
+  }
+  GLint disjoint = 0;
+#ifdef SIM_GLES
+  glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+#endif
+  float *targets[GPU_PART_COUNT] = {&sTimings.gpu3dMs, &sTimings.gpuMainMs, &sTimings.gpuSecondaryMs};
+  for (int part = 0; part < GPU_PART_COUNT; part++) {
+    for (int slot = 0; slot < kGpuQueryRing; slot++) {
+      if (!sGpuQueryPending[part][slot]) {
+        continue;
+      }
+      GLuint available = 0;
+      glGetQueryObjectuiv(sGpuQueries[part][slot], GL_QUERY_RESULT_AVAILABLE, &available);
+      if (!available) {
+        continue;
+      }
+      GLuint ns = 0;
+      glGetQueryObjectuiv(sGpuQueries[part][slot], GL_QUERY_RESULT, &ns);
+      sGpuQueryPending[part][slot] = false;
+      if (!disjoint) {
+        SIM_Smooth(targets[part], ns);
+      }
+    }
+  }
 }
 
 static constexpr auto SteamDeckWidth = 1280;
 static constexpr auto SteamDeckHeight = 800;
 
-u8 bgtex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
 u8 bg0tex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
 u8 bg1tex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
 u8 bg2tex[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
@@ -160,13 +281,10 @@ static GLuint g3FrameBuffer;
 static GLuint fboId;
 static GLuint g2FrameBuffer;
 
-// Texture Objects
-GLuint s_bgTextureId[4];
-GLuint s_objTextureId[5];
+// Texture Objects (the 2D layers' are in sLayerSets)
 static GLuint g2TextureId;
 static GLuint g3RenderTextureId;
 static GLuint dummyScreenTextureId;
-static GLuint objWindowTextureId;
 
 GLint s_bgTexUnits[] = {0, 1, 2, 3};
 static GLint s_objTexUnits[] = {4, 5, 6, 7, 8};
@@ -251,21 +369,114 @@ static void DrawScreenQuad();
 static void DrawEngine(BOOL isSub);
 
 // The 2D layer textures hold both screens (256x384); each engine only draws into the
-// half for the screen it is shown on. Uploading just that half halves the per-frame
-// texture traffic, which mobile GPUs feel.
+// half for the screen it is shown on, and only that half is uploaded.
 extern "C" int SIM_EngineTextureRow(BOOL isSub) {
   const BOOL topScreen = (s_reg_GX_POWCNT >> 15) ? !isSub : isSub;
   return topScreen ? SIM_NDS_SCREEN_HEIGHT : 0;
 }
 
-extern "C" void SIM_UploadEngineHalf(const u8 *fullBuffer, BOOL isSub) {
-  const int row = SIM_EngineTextureRow(isSub);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row, SIM_NDS_SCREEN_WIDTH, SIM_NDS_SCREEN_HEIGHT,
-                  GL_RGBA, GL_UNSIGNED_BYTE, fullBuffer + 4 * SIM_NDS_SCREEN_WIDTH * row);
+// Each engine has its own textures for its layers (4 backgrounds, 4 sprite priorities and
+// the sprite window), in a ring of sets used one frame after another. A set is rewritten
+// only frames after the GPU last drew with it, and the engines never share a texture, so
+// an upload never has to wait for (or make the driver copy) a texture the GPU is still
+// reading, which tiled mobile GPUs pay dearly for. A layer that is the same as what the
+// set already holds isn't uploaded at all.
+enum {
+  LAYER_OBJ0 = 4,
+  LAYER_OBJ_WINDOW = 8,
+  LAYER_COUNT = 9,
+};
+static constexpr int kLayerRing = 3;
+static constexpr size_t kLayerHalfBytes = 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT;
+
+struct LayerSet {
+  GLuint texture[LAYER_COUNT];
+  u64 hash[LAYER_COUNT];
+  int row[LAYER_COUNT]; // the half the hash is of; -1: unknown
+};
+static LayerSet sLayerSets[2][kLayerRing];
+static int sLayerRingIndex = 0;
+static u64 sEmptyLayerHash = 0;
+
+// Profile of the frame being drawn
+static u64 sFrameUploadNs = 0;
+static u32 sFrameUploads = 0;
+static u64 sFrameG2Ns = 0;
+
+// Fast 64-bit hash of a layer half (four independent lanes; data is 8-byte aligned)
+static u64 HashLayerHalf(const u8 *data) {
+  const u64 *words = (const u64 *)data;
+  const size_t count = kLayerHalfBytes / sizeof(u64);
+  const u64 k = 0x9E3779B97F4A7C15ull;
+  u64 h0 = 0x243F6A8885A308D3ull, h1 = 0x13198A2E03707344ull, h2 = 0xA4093822299F31D0ull,
+      h3 = 0x082EFA98EC4E6C89ull;
+  for (size_t i = 0; i < count; i += 4) {
+    h0 = (h0 ^ words[i]) * k;
+    h1 = (h1 ^ words[i + 1]) * k;
+    h2 = (h2 ^ words[i + 2]) * k;
+    h3 = (h3 ^ words[i + 3]) * k;
+    h0 ^= h0 >> 29;
+    h1 ^= h1 >> 29;
+    h2 ^= h2 >> 29;
+    h3 ^= h3 >> 29;
+  }
+  u64 h = h0 ^ (h1 * 3) ^ (h2 * 5) ^ (h3 * 7);
+  h ^= h >> 33;
+  h *= 0xFF51AFD7ED558CCDull;
+  h ^= h >> 33;
+  return h;
 }
 
-// Sprite layers are often empty; skip re-uploading an empty half that is already empty
-static bool sObjHalfEmpty[5][2]; // 4 OBJ priority layers + the OBJ window, per half
+static void CreateLayerTextures() {
+  static u8 zeros[4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2];
+  sEmptyLayerHash = HashLayerHalf(zeros);
+  glActiveTexture(GL_TEXTURE0);
+  for (int engine = 0; engine < 2; engine++) {
+    for (int r = 0; r < kLayerRing; r++) {
+      LayerSet &set = sLayerSets[engine][r];
+      glGenTextures(LAYER_COUNT, set.texture);
+      for (int layer = 0; layer < LAYER_COUNT; layer++) {
+        glBindTexture(GL_TEXTURE_2D, set.texture[layer]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        // Both halves start empty (the other half is never sampled, but stays defined)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SIM_NDS_SCREEN_WIDTH, SIM_NDS_SCREEN_HEIGHT * 2, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, zeros);
+        set.hash[layer] = sEmptyLayerHash;
+        set.row[layer] = -1;
+      }
+    }
+  }
+}
+
+extern "C" GLuint SIM_LayerTexture(BOOL isSub, int layer) {
+  return sLayerSets[isSub ? 1 : 0][sLayerRingIndex].texture[layer];
+}
+
+// Binds the engine's texture for the layer to the active texture unit, with the half of
+// fullBuffer for the engine's screen in it (knownEmpty: that half is all zero)
+extern "C" void SIM_UploadLayer(BOOL isSub, int layer, const u8 *fullBuffer, BOOL knownEmpty) {
+  const u64 start = SIM_NowNs();
+  LayerSet &set = sLayerSets[isSub ? 1 : 0][sLayerRingIndex];
+  const int row = SIM_EngineTextureRow(isSub);
+  const u8 *half = fullBuffer + 4 * SIM_NDS_SCREEN_WIDTH * row;
+  const u64 hash = knownEmpty ? sEmptyLayerHash : HashLayerHalf(half);
+  glBindTexture(GL_TEXTURE_2D, set.texture[layer]);
+  if (set.row[layer] != row || set.hash[layer] != hash) {
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, row, SIM_NDS_SCREEN_WIDTH, SIM_NDS_SCREEN_HEIGHT, GL_RGBA,
+                    GL_UNSIGNED_BYTE, half);
+    set.row[layer] = row;
+    set.hash[layer] = hash;
+    sFrameUploads++;
+  }
+  sFrameUploadNs += SIM_NowNs() - start;
+}
+
+static void NextLayerSet() {
+  sLayerRingIndex = (sLayerRingIndex + 1) % kLayerRing;
+}
 
 static u8 s_numG3CommandsThisFrame = 0;
 
@@ -513,37 +724,7 @@ void *SIM_RenderInit(void *arg) {
 
   GLchar *errorBuf;
 
-  glGenTextures(4, s_bgTextureId);
-  glActiveTexture(GL_TEXTURE0);
-
-  for (int i = 0; i < 4; i++) {
-    glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[i]);
-    glBindTexture(GL_TEXTURE_2D, s_bgTextureId[i]);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SIM_NDS_SCREEN_WIDTH,
-                 SIM_NDS_SCREEN_HEIGHT * 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  }
-
-  glGenTextures(5, s_objTextureId);
-  glActiveTexture(GL_TEXTURE0);
-
-  for (int i = 0; i < 5; i++) {
-    glActiveTexture(GL_TEXTURE0 + s_objTexUnits[i]);
-    glBindTexture(GL_TEXTURE_2D, s_objTextureId[i]);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SIM_NDS_SCREEN_WIDTH,
-                 SIM_NDS_SCREEN_HEIGHT * 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  }
+  CreateLayerTextures();
 
 #define GenerateTexture(_id, _width, _height)                                  \
   glGenTextures(1, &_id);                                                      \
@@ -594,8 +775,6 @@ void *SIM_RenderInit(void *arg) {
   glUseProgram(_id);
 
   GenerateTexture(dummyScreenTextureId, SIM_NDS_SCREEN_WIDTH,
-                  SIM_NDS_SCREEN_HEIGHT * 2);
-  GenerateTexture(objWindowTextureId, SIM_NDS_SCREEN_WIDTH,
                   SIM_NDS_SCREEN_HEIGHT * 2);
 
   // 3D Framebuffer render texture
@@ -676,6 +855,8 @@ void *SIM_RenderInit(void *arg) {
 
   // Secondary screen output (second display on Android, second window on PC)
   SIM_Display_Init(window, context);
+
+  GpuTimersInit();
 
   clock_gettime(CLOCK_MONOTONIC, &s_SIM_lastFrameEnd);
 
@@ -774,72 +955,70 @@ static void DrawEngine(BOOL isSub) {
   // Set up the BGOrder in the shader
   glUniform1iv(glGetUniformLocation(g2shaderProgramID, "bgOrder"), 4, bgOrder);
 
-  // Clear out the textures
+  const u64 g2Start = SIM_NowNs();
+  const u64 uploadNsBefore = sFrameUploadNs;
+  const int half = SIM_EngineTextureRow(isSub);
+  const size_t halfOffset = 4 * SIM_NDS_SCREEN_WIDTH * half;
+
+  // Sprites: only the lines a sprite of that priority covers are worked on
+  u8 *objBufs[4] = {isSub ? oam0sTex : oam0Tex, isSub ? oam1sTex : oam1Tex, isSub ? oam2sTex : oam2Tex,
+                    isSub ? oam3sTex : oam3Tex};
+  u8 *objWindowBuf = isSub ? objWindowsTex : objWindowTex;
   for (int i = 0; i < 4; i++) {
-    glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[0]);
-    glBindTexture(GL_TEXTURE_2D, dummyScreenTextureId);
+    memset(objBufs[i] + halfOffset, 0, kLayerHalfBytes);
   }
-
-  for (int i = 0; i < 5; i++) {
-    glActiveTexture(GL_TEXTURE0 + s_objTexUnits[0]);
-    glBindTexture(GL_TEXTURE_2D, dummyScreenTextureId);
-  }
-
-  // Draw the Sprites
-  if (isSub) {
-    memset(oam0sTex, 0, sizeof(oam0sTex));
-    memset(oam1sTex, 0, sizeof(oam1sTex));
-    memset(oam2sTex, 0, sizeof(oam2sTex));
-    memset(oam3sTex, 0, sizeof(oam3sTex));
-    memset(objWindowsTex, 0, sizeof(objWindowsTex));
-  } else {
-    memset(oam0Tex, 0, sizeof(oam0Tex));
-    memset(oam1Tex, 0, sizeof(oam1Tex));
-    memset(oam2Tex, 0, sizeof(oam2Tex));
-    memset(oam3Tex, 0, sizeof(oam3Tex));
-    memset(objWindowTex, 0, sizeof(objWindowTex));
-  }
+  memset(objWindowBuf + halfOffset, 0, kLayerHalfBytes);
 
   bool objLayerUsed[5] = {false, false, false, false, false};
+  u8 objLines[4][SIM_NDS_SCREEN_HEIGHT];
+  memset(objLines, 0, sizeof(objLines));
+  if ((dispcnt & 0x1000) && (isSub ? s_SIM_DBG_OAMSenable : s_SIM_DBG_OAMenable)) {
+    static const u8 kSpriteHeight[16] = {8, 8, 16, 8, 16, 8, 32, 8, 32, 16, 32, 8, 64, 32, 64, 8};
+    const u16 *oam = isSub ? (const u16 *)s_HW_DB_OAM : (const u16 *)s_HW_OAM;
+    for (int sprite = 0; sprite < 128; sprite++) {
+      const u16 *attrib = &oam[sprite * 4];
+      const bool rotScale = (attrib[0] & 0x0100) != 0;
+      if (!rotScale && (attrib[0] & 0x0200)) {
+        continue; // hidden
+      }
+      const u32 sizeparam = (attrib[0] >> 14) | ((attrib[1] & 0xC000) >> 12);
+      u32 height = kSpriteHeight[sizeparam];
+      if (rotScale && (attrib[0] & 0x0200)) {
+        height <<= 1; // double size
+      }
+      const u32 ypos = attrib[0] & 0xFF;
+      const int priority = (attrib[2] >> 10) & 3;
+      for (u32 y = 0; y < height; y++) {
+        const u32 line = (ypos + y) & 0xFF;
+        if (line < SIM_NDS_SCREEN_HEIGHT) {
+          objLines[priority][line] = 1;
+        }
+      }
+    }
+  }
+
+  const u16 *objPltt = isSub ? (const u16 *)s_HW_DB_OBJ_PLTT : (const u16 *)s_HW_OBJ_PLTT;
   for (int i = 0; i < SIM_NDS_SCREEN_HEIGHT; i++) {
     for (int bgnum = 0x0C00; bgnum >= 0x0000; bgnum -= 0x0400) {
+      const int priority = bgnum >> 10;
+      if (!objLines[priority][i]) {
+        continue;
+      }
       memset(OBJLine, 0, sizeof(OBJLine));
       memset(OBJWindow, 0, sizeof(OBJWindow));
       G2SIM_DrawOBJ(i, isSub, bgnum);
-      u8 *pixelBuf;
-      u8 *objWindowBuf = isSub ? objWindowsTex : objWindowTex;
-      switch (bgnum) {
-      case 0xC00:
-        pixelBuf = isSub ? oam3sTex : oam3Tex;
-        break;
-      case 0x800:
-        pixelBuf = isSub ? oam2sTex : oam2Tex;
-        break;
-      case 0x400:
-        pixelBuf = isSub ? oam1sTex : oam1Tex;
-        break;
-      case 0x000:
-        pixelBuf = isSub ? oam0sTex : oam0Tex;
-        break;
-      default:
-        // Invalid case
-        pixelBuf = NULL;
-        break;
-      }
+      u8 *pixelBuf = objBufs[priority];
       u8 r;
       u8 g;
       u8 b;
-      u8 a;
       for (int j = 0; j < 256; j++) {
         if (OBJLine[isSub][j]) {
           u8 colorIdx = OBJLine[isSub][j] & 0xFF;
           if (colorIdx) {
-            u16 *objPltt =
-                isSub ? (u16 *)s_HW_DB_OBJ_PLTT : (u16 *)s_HW_OBJ_PLTT;
             u16 color = objPltt[colorIdx];
             SIM_u16ToRGB(color, &r, &g, &b);
             G2SIM_PlotPixel(pixelBuf, r, g, b, j, i, isSub);
-            objLayerUsed[bgnum >> 10] = true;
+            objLayerUsed[priority] = true;
           }
         }
         if (OBJWindow[isSub][j]) {
@@ -850,77 +1029,35 @@ static void DrawEngine(BOOL isSub) {
     }
   }
 
-  int drawnOAMs = 0;
-
-  // Draw the BGs
+  // Backgrounds (each binds and uploads its texture)
+  u8 *bgBufs[4] = {isSub ? bg0stex : bg0tex, isSub ? bg1stex : bg1tex, isSub ? bg2stex : bg2tex,
+                   isSub ? bg3stex : bg3tex};
   for (int i = 0; i < 4; i++) {
-    u8 curBgNum = bgOrder[i];
-
-    if (bgEnabled[bgOrder[i]]) {
-      G2SIM_DrawBG(bgOrder[i], bgMode, bg0as3d, isSub);
+    const int bg = bgOrder[i];
+    glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[bg]);
+    if (bgEnabled[bg] && !(bg == 0 && bg0as3d)) {
+      memset(bgBufs[bg] + halfOffset, 0, kLayerHalfBytes);
+      G2SIM_DrawBG(bg, bgMode, bg0as3d, isSub);
+    } else if (bgEnabled[bg]) {
+      glBindTexture(GL_TEXTURE_2D, g3RenderTextureId); // BG0 shows the 3D scene
     } else {
-      glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[bgOrder[i]]);
       glBindTexture(GL_TEXTURE_2D, dummyScreenTextureId);
     }
   }
 
-  // write all OAMs to the textures based on their priorities
+  // Sprite layers by priority, and the sprite window
   for (int i = 0; i < 4; i++) {
     glActiveTexture(GL_TEXTURE0 + s_objTexUnits[i]);
-    glBindTexture(GL_TEXTURE_2D, s_objTextureId[i]);
-    void *oamPixelBuf;
-    switch (i) {
-    case 0:
-      oamPixelBuf = isSub ? oam0sTex : oam0Tex;
-      break;
-    case 1:
-      oamPixelBuf = isSub ? oam1sTex : oam1Tex;
-      break;
-    case 2:
-      oamPixelBuf = isSub ? oam2sTex : oam2Tex;
-      break;
-    case 3:
-      oamPixelBuf = isSub ? oam3sTex : oam3Tex;
-      break;
-    default:
-      // invalid
-      oamPixelBuf = NULL;
-      break;
-    }
-    const int half = SIM_EngineTextureRow(isSub) ? 1 : 0;
-    if (objLayerUsed[i] || !sObjHalfEmpty[i][half]) {
-      SIM_UploadEngineHalf((const u8 *)oamPixelBuf, isSub);
-      sObjHalfEmpty[i][half] = !objLayerUsed[i];
-    }
+    SIM_UploadLayer(isSub, LAYER_OBJ0 + i, objBufs[i], objLayerUsed[i] ? FALSE : TRUE);
   }
-
-  glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[0]);
-
-  if (bgEnabled[0]) {
-    if (bg0as3d) {
-      glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
-    } else {
-      glBindTexture(GL_TEXTURE_2D, s_bgTextureId[0]);
-    }
-  } else {
-    glBindTexture(GL_TEXTURE_2D, dummyScreenTextureId);
-  }
-
-  // Setup the OBJWindow texture
   glActiveTexture(GL_TEXTURE0 + s_objWindowTexUnit);
-  glBindTexture(GL_TEXTURE_2D, objWindowTextureId);
-  u8 *objWindowBuf = isSub ? objWindowsTex : objWindowTex;
-  {
-    const int half = SIM_EngineTextureRow(isSub) ? 1 : 0;
-    if (objLayerUsed[4] || !sObjHalfEmpty[4][half]) {
-      SIM_UploadEngineHalf(objWindowBuf, isSub);
-      sObjHalfEmpty[4][half] = !objLayerUsed[4];
-    }
-  }
+  SIM_UploadLayer(isSub, LAYER_OBJ_WINDOW, objWindowBuf, objLayerUsed[4] ? FALSE : TRUE);
   glProgramUniform1i(
       g2shaderProgramID,
       glGetUniformLocation(g2shaderProgramID, "objWindowTexture"),
       s_objWindowTexUnit);
+
+  sFrameG2Ns += (SIM_NowNs() - g2Start) - (sFrameUploadNs - uploadNsBefore);
 
   // Pass BLDCNT, BLDALPHA, and BLDY value to the shader
   u16 bldcnt = isSub ? s_reg_G2S_DB_BLDCNT : s_reg_G2_BLDCNT;
@@ -973,17 +1110,6 @@ static void DrawEngine(BOOL isSub) {
   glBindVertexArray(g2vertexArray);
   glBindBuffer(GL_ARRAY_BUFFER, g2vertexBuffer);
   DrawScreenQuad();
-
-  // Clear out the textures
-  for (int i = 0; i < 4; i++) {
-    glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[0]);
-    glBindTexture(GL_TEXTURE_2D, dummyScreenTextureId);
-  }
-
-  for (int i = 0; i < 5; i++) {
-    glActiveTexture(GL_TEXTURE0 + s_objTexUnits[0]);
-    glBindTexture(GL_TEXTURE_2D, dummyScreenTextureId);
-  }
 #ifdef SDK_TRACY_ENABLE
   TracyCZoneEnd(ctx);
 #endif
@@ -1131,10 +1257,25 @@ void *SIM_Render(void *arg) {
   // Draw the translucent 3D stuff
   G3SIM_DrawItems();
 
+  GpuTimerEnd(); // the 3D scene's GPU time (started after the last frame)
+  GpuTimersCollect();
+#ifdef SDK_BUILD_ANDROID
+  static bool sThreadSetUp = false;
+  if (!sThreadSetUp) {
+    sThreadSetUp = true;
+    SIM_Android_GameThreadStarted();
+  }
+#endif
+
   do {
 #ifdef SDK_TRACY_ENABLE
     TracyCZone(SimRenderZone, 1);
 #endif
+    // A frame the game will replace before it's seen (SIM_SkipNextFrame) isn't drawn: the
+    // game still runs, with its input and vblank handlers
+    const bool present = !(sSkipNextFrame && !SIM::GUI::IsGameLogicPaused());
+    sSkipNextFrame = false;
+    sVBlanksThisSecond++;
     // SIM_Net_Process();
     if ((*((u32 *)HW_VBLANK_COUNT_BUF) % 10) == 0) {
       SIM_Net_SendBeaconIndication();
@@ -1528,27 +1669,18 @@ void *SIM_Render(void *arg) {
       }
     }
 
+    sFrameG2Ns = 0;
+    sFrameUploadNs = 0;
+    sFrameUploads = 0;
+    u64 secondaryNs = 0;
+    u64 companionNs = 0;
+    u64 secondarySwapNs = 0;
+    u64 guiNs = 0;
+    if (present) {
+    const u64 guiStart = SIM_NowNs();
     SIM::GUI::NewFrame();
     SIM::GUI::Main();
-
-    memset(bgtex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg0tex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg1tex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg2tex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg3tex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg0stex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg1stex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg2stex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
-    memset(bg3stex, 0,
-           sizeof(u8) * 4 * SIM_NDS_SCREEN_WIDTH * SIM_NDS_SCREEN_HEIGHT * 2);
+    guiNs += SIM_NowNs() - guiStart;
 
     if (dualScreen) {
       // Both outputs must be drawn before the VBlank handlers below change VRAM,
@@ -1563,7 +1695,10 @@ void *SIM_Render(void *arg) {
       // buffer intact on every driver.
       int secondaryWidth;
       int secondaryHeight;
+      const u64 secondaryStart = SIM_NowNs();
+      const u64 secondaryG2Before = sFrameG2Ns + sFrameUploadNs;
       if (SIM_Display_BeginSecondary(&secondaryWidth, &secondaryHeight)) {
+        GpuTimerBegin(GPU_SECONDARY);
         // DS screen, plus the game's companion UI when it has one (sim_companion.h)
         SIM_CompanionLayout layout;
         SIM_Companion_ComputeLayout(secondaryWidth, secondaryHeight, &layout);
@@ -1589,11 +1724,18 @@ void *SIM_Render(void *arg) {
           s_SecondaryDsTouchDown = false;
         }
 
+        const u64 companionStart = SIM_NowNs();
         SIM_Companion_Render(&layout);
+        companionNs = SIM_NowNs() - companionStart;
+        GpuTimerEnd();
+        const u64 endStart = SIM_NowNs();
         SIM_Display_EndSecondary();
+        secondarySwapNs = SIM_NowNs() - endStart;
       }
+      secondaryNs = (SIM_NowNs() - secondaryStart) - ((sFrameG2Ns + sFrameUploadNs) - secondaryG2Before);
 
       // Main window: the top screen (bottom screen when swapped)
+      GpuTimerBegin(GPU_MAIN);
       glViewport(0, 0, windowWidth, windowHeight);
       glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1618,12 +1760,19 @@ void *SIM_Render(void *arg) {
         s_WasDualScreen = false;
       }
 
+      GpuTimerBegin(GPU_MAIN);
+      glViewport(0, 0, windowWidth, windowHeight);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glViewport(viewX, viewY, viewWidth, viewHeight);
+
       // Draw MAIN engine
       DrawEngine(FALSE);
 
       // SUB engine
       DrawEngine(TRUE);
     }
+    } // present
 
     // Run HBlank Interrupt
     OS_IRQTable[OS_IE_H_BLANK - 1]();
@@ -1633,7 +1782,19 @@ void *SIM_Render(void *arg) {
     s_HW_INTR_CHECK_BUF |= 1;
     *((u32 *)HW_VBLANK_COUNT_BUF) = *((u32 *)HW_VBLANK_COUNT_BUF) + 1;
 
-    SIM::GUI::Render();
+    if (present) {
+      const u64 guiStart = SIM_NowNs();
+      SIM::GUI::Render();
+      guiNs += SIM_NowNs() - guiStart;
+      GpuTimerEnd();
+      SIM_Smooth(&sTimings.g2Ms, sFrameG2Ns);
+      SIM_Smooth(&sTimings.uploadMs, sFrameUploadNs);
+      SIM_Smooth(&sTimings.secondaryMs, secondaryNs);
+      SIM_Smooth(&sTimings.companionMs, companionNs);
+      SIM_Smooth(&sTimings.secondarySwapMs, secondarySwapNs);
+      SIM_Smooth(&sTimings.guiMs, guiNs);
+      SIM_SmoothValue(&sTimings.uploads2d, (float)sFrameUploads);
+    }
 
     // Calculate frametime
     struct timespec curTime;
@@ -1647,7 +1808,12 @@ void *SIM_Render(void *arg) {
     TracyCZoneEnd(SimRenderZone);
 #endif
     sBeforeWaitNs = SIM_NowNs();
-    SIM_Smooth(&sTimings.drawMs, sBeforeWaitNs - sRenderStartNs);
+    if (present) {
+      SIM_Smooth(&sTimings.drawMs, sBeforeWaitNs - sRenderStartNs);
+    }
+#ifdef SDK_BUILD_ANDROID
+    SIM_Android_ReportFrameWork((long long)frameNs);
+#endif
 
     // Limit framerate to 60 fps
     if (s_SIM_config.capFrameRate && !sFastForward) {
@@ -1663,11 +1829,16 @@ void *SIM_Render(void *arg) {
     }
 
     u64 beforeSwapNs = SIM_NowNs();
-    SIM_Smooth(&sTimings.capWaitMs, beforeSwapNs - sBeforeWaitNs);
+    if (present) {
+      SIM_Smooth(&sTimings.capWaitMs, beforeSwapNs - sBeforeWaitNs);
 
-    SDL_GL_SwapWindow(window);
+      SDL_GL_SwapWindow(window);
 
-    SIM_Smooth(&sTimings.swapMs, SIM_NowNs() - beforeSwapNs);
+      SIM_Smooth(&sTimings.swapMs, SIM_NowNs() - beforeSwapNs);
+      NextLayerSet();
+      sShownThisSecond++;
+    }
+    UpdateRates();
 
     {
       // LIBNTR_PERF_LOG=1: print the frame time breakdown every two seconds
@@ -1678,8 +1849,13 @@ void *SIM_Render(void *arg) {
         sPerfLog = (env != NULL && env[0] == '1') ? 1 : 0;
       }
       if (sPerfLog && ++sPerfFrames % 120 == 0) {
-        printf("perf: game %.2f  3d %.2f  draw %.2f  wait %.2f  swap %.2f ms\n", sTimings.gameMs,
-               sTimings.g3SubmitMs, sTimings.drawMs, sTimings.capWaitMs, sTimings.swapMs);
+        printf("perf: game %.2f  3d %.2f  draw %.2f (2d %.2f upload %.2f second %.2f gui %.2f)  wait %.2f  swap %.2f "
+               "ms [companion %.2f, 2nd swap %.2f] | gpu 3d %.2f main %.2f second %.2f | shown %.0f/s vblanks %.0f/s draws %.0f uploads %.1f\n",
+               sTimings.gameMs, sTimings.g3SubmitMs, sTimings.drawMs, sTimings.g2Ms, sTimings.uploadMs,
+               sTimings.secondaryMs, sTimings.guiMs, sTimings.capWaitMs, sTimings.swapMs, sTimings.companionMs,
+               sTimings.secondarySwapMs, sTimings.gpu3dMs,
+               sTimings.gpuMainMs, sTimings.gpuSecondaryMs, sTimings.shownPerSecond, sTimings.vblanksPerSecond,
+               sTimings.draws3d, sTimings.uploads2d);
         fflush(stdout);
       }
     }
@@ -1701,12 +1877,7 @@ void *SIM_Render(void *arg) {
 #endif
 
     s_numG3CommandsThisFrame = 0;
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
     s_curPolygonAttr.alpha = 1.0f;
-
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
   } while (SIM::GUI::IsGameLogicPaused());
   // Bind 3D Framebuffer & Renderbuffer
@@ -1726,6 +1897,7 @@ void *SIM_Render(void *arg) {
 
   // Activate 3D shader
   glUseProgram(g3shaderProgramID);
+  GpuTimerBegin(GPU_3D); // until the next frame's drawing starts
 
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_CULL_FACE);

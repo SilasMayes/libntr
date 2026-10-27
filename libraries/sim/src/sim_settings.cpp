@@ -5,6 +5,9 @@
 #include "simulator/sim.h"
 #include "simulator/sim_gui.hpp"
 #include "simulator/sim_ui.hpp"
+#ifdef SDK_BUILD_ANDROID
+#include "simulator/sim_android.h"
+#endif
 
 #include <SDL2/SDL.h>
 
@@ -233,15 +236,35 @@ void DrawControls() {
 // --- Advanced -----------------------------------------------------------------------------
 
 void DrawAdvanced() {
-  float frameMs = (float)SIM_GetFullFrameTime() / 1000000.0f;
-  SIM_FrameTimings timings;
-  SIM_GetFrameTimings(&timings);
-  char text[160];
-  snprintf(text, sizeof(text), "%.0f frames a second. Game %.1f ms, 3D %.1f ms, drawing %.1f ms, waiting %.1f ms, "
-           "swap %.1f ms.", frameMs > 0.0f ? 1000.0f / frameMs : 0.0f, timings.gameMs, timings.g3SubmitMs,
-           timings.drawMs, timings.capWaitMs, timings.swapMs);
+  SIM_FrameTimings t;
+  SIM_GetFrameTimings(&t);
+  char text[320];
   Section("Performance");
+  bool overlay = SIM_GetConfigPtr()->perfOverlay != 0;
+  if (Toggle("Frame timings on screen", "Over the game, top-left: where each frame's time goes.", &overlay)) {
+    SIM_GetConfigPtr()->perfOverlay = overlay ? 1 : 0;
+    SaveConfig();
+  }
+  snprintf(text, sizeof(text), "%.0f frames a second shown; the game runs at %.0f of 60.", t.shownPerSecond,
+           t.vblanksPerSecond);
   Note(text);
+  float other = t.drawMs - (t.g2Ms + t.uploadMs + t.secondaryMs + t.guiMs);
+  snprintf(text, sizeof(text),
+           "CPU, ms per frame: game %.1f, 3D draw calls %.1f, 2D layers %.1f, layer uploads %.1f, second screen "
+           "%.1f (companion %.1f, showing it %.1f), menus %.1f, other drawing %.1f, waiting %.1f, swap %.1f.",
+           t.gameMs, t.g3SubmitMs, t.g2Ms, t.uploadMs, t.secondaryMs, t.companionMs, t.secondarySwapMs, t.guiMs,
+           other > 0.0f ? other : 0.0f, t.capWaitMs, t.swapMs);
+  Note(text);
+  if (t.gpu3dMs >= 0.0f) {
+    snprintf(text, sizeof(text), "GPU, ms per frame: 3D scene %.1f, top screen %.1f, bottom screen %.1f.", t.gpu3dMs,
+             t.gpuMainMs, t.gpuSecondaryMs);
+  } else {
+    snprintf(text, sizeof(text), "GPU times aren't available on this GPU.");
+  }
+  Note(text);
+#ifdef SDK_BUILD_ANDROID
+  Note(SIM_Android_CpuInfo());
+#endif
 
   Section("Developer");
   if (Button("Developer windows", "The original debug windows: libntr, multiplayer, the game's tools.")) {

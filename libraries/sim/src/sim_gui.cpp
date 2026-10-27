@@ -1,4 +1,6 @@
 #include "simulator/sim.h"
+#include <cfloat>
+#include <cstdio>
 #include "simulator/sim_gui.hpp"
 #include "simulator/sim_files.h"
 #include "simulator/sim_carts.h"
@@ -93,6 +95,51 @@ static bool MenuActive() {
     return SIM::Settings::IsOpen() || SIM_Carts_UIActive();
 }
 
+// Settings > Advanced > Frame timings on screen: where each frame's time goes, over the
+// game (top-left corner of the main window)
+static void PerfOverlay() {
+    if (!SIM_GetConfigPtr()->perfOverlay) {
+        return;
+    }
+    SIM_FrameTimings t;
+    SIM_GetFrameTimings(&t);
+    float other = t.drawMs - (t.g2Ms + t.uploadMs + t.secondaryMs + t.guiMs);
+    if (other < 0.0f) {
+        other = 0.0f;
+    }
+    char lines[3][200];
+    snprintf(lines[0], sizeof(lines[0]), "%.0f fps shown, game at %.0f/60  (3D draws %.0f, layer uploads %.1f)",
+             t.shownPerSecond, t.vblanksPerSecond, t.draws3d, t.uploads2d);
+    snprintf(lines[1], sizeof(lines[1]),
+             "CPU ms  game %.1f  3D %.1f  2D %.1f  upload %.1f  2nd screen %.1f (gear %.1f, show %.1f)  menus %.1f  "
+             "other %.1f  wait %.1f  swap %.1f",
+             t.gameMs, t.g3SubmitMs, t.g2Ms, t.uploadMs, t.secondaryMs, t.companionMs, t.secondarySwapMs, t.guiMs,
+             other, t.capWaitMs, t.swapMs);
+    if (t.gpu3dMs >= 0.0f) {
+        snprintf(lines[2], sizeof(lines[2]), "GPU ms  3D %.1f  top %.1f  bottom %.1f", t.gpu3dMs, t.gpuMainMs,
+                 t.gpuSecondaryMs);
+    } else {
+        snprintf(lines[2], sizeof(lines[2]), "GPU ms  (no timer queries on this GPU)");
+    }
+
+    ImFont *font = SIM::UI::RegularFont();
+    const float px = SIM::UI::S(12.0f);
+    const float pad = SIM::UI::S(5.0f);
+    float width = 0.0f, height = pad;
+    for (const char *line : lines) {
+        ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, line);
+        width = size.x > width ? size.x : width;
+        height += size.y;
+    }
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(ImVec2(0, 0), ImVec2(width + pad * 2, height + pad), IM_COL32(0, 0, 0, 170));
+    float y = pad;
+    for (const char *line : lines) {
+        draw->AddText(font, px, ImVec2(pad, y), IM_COL32(235, 240, 245, 255), line);
+        y += font->CalcTextSizeA(px, FLT_MAX, 0.0f, line).y;
+    }
+}
+
 void Main() {
     static bool sMenuWasActive = false;
     const bool menuActive = MenuActive();
@@ -108,6 +155,9 @@ void Main() {
         return;
     }
     PrjOverlay();
+    if (!MenuActive()) {
+        PerfOverlay();
+    }
 
     if (SIM::Settings::IsOpen()) {
         SIM::Settings::Draw();

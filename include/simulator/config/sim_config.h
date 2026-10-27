@@ -62,6 +62,7 @@ typedef struct {
     BOOL secondaryScreen; /* Show the bottom screen on a second display (Android) or window (PC) when one is available */
     u8 vsyncInterval; /* Vertical sync interval. Set to 0 to disable vsync, 1 every vblank, 2 every second vblank etc*/
     u8 capFrameRate; /* Should the frame rate be capped to 60 fps? */
+    u8 perfOverlay; /* Show the frame timings over the game */
     u8 macAddr[6]; /* MAC address */
     SIM_config_pad_settings_type padSettings; /* Input pad settings */
     NVRAMConfig osNvramConfig; /* OS NVRAM config */

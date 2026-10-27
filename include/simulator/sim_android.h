@@ -22,6 +22,17 @@ int SIM_Android_PollRomImport(char *pathOut, size_t pathOutSize);
 // Restarts the app (a fresh process): used to switch to another game
 void SIM_Android_RestartApp(void);
 
+// CPU speed. Called on the game's thread: it moves to the fastest cores, and the system
+// is told how long each frame's work may take (performance hints, Android 13+), so the
+// frame limiter's sleeps don't make it look like a light load to be parked on the slow
+// cores at low clocks.
+void SIM_Android_GameThreadStarted(void);
+// A frame's work (everything but the frame limiter's wait and the swap) took workNs
+void SIM_Android_ReportFrameWork(long long workNs);
+// What the frame timings show about it: the cores the game runs on, and whether the
+// system takes performance hints
+const char *SIM_Android_CpuInfo(void);
+
 #ifdef __cplusplus
 }
 #endif
