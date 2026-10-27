@@ -635,18 +635,107 @@ void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id,
   //           type, severity, message );
 }
 
-void SIM_SetInternalResolution(int internalRes) {
-  glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-               SIM_NDS_SCREEN_WIDTH * s_SIM_config.internalResolutionScale,
-               SIM_NDS_SCREEN_HEIGHT * 2 * s_SIM_config.internalResolutionScale,
-               0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+// The 3D scene's scale in use: the setting, or with "match the screen" (0) the smallest
+// that is at least as sharp as the screen showing it (from the last frame's layout)
+static int sScale = 1;
+static int sAutoScale = 5;
 
+static int WantedScale() {
+  const int setting = (int)s_SIM_config.internalResolutionScale;
+  if (setting > 0) {
+    return setting > 20 ? 20 : setting;
+  }
+  return sAutoScale;
+}
+
+extern "C" int SIM_GetInternalScale(void) {
+  return sScale;
+}
+
+// Anti-aliasing on mobile GPUs (GL_EXT_multisampled_render_to_texture): the samples stay
+// in the GPU's tile memory and are averaged as the tile is written to the 3D texture, so
+// nothing else changes and it costs little
+#ifdef SIM_GLES
+typedef void(GL_APIENTRYP FramebufferTexture2DMultisampleFn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+typedef void(GL_APIENTRYP RenderbufferStorageMultisampleFn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+static FramebufferTexture2DMultisampleFn sFramebufferTexture2DMultisample = nullptr;
+static RenderbufferStorageMultisampleFn sRenderbufferStorageMultisample = nullptr;
+static int sMaxSamples = 0;
+#endif
+static int sSamples = 0; // in use
+
+static void FindAntiAliasing() {
+#ifdef SIM_GLES
+  GLint count = 0;
+  glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+  bool found = false;
+  for (GLint i = 0; i < count && !found; i++) {
+    const char *name = (const char *)glGetStringi(GL_EXTENSIONS, i);
+    found = name != nullptr && strcmp(name, "GL_EXT_multisampled_render_to_texture") == 0;
+  }
+  if (found) {
+    sFramebufferTexture2DMultisample =
+        (FramebufferTexture2DMultisampleFn)SDL_GL_GetProcAddress("glFramebufferTexture2DMultisampleEXT");
+    sRenderbufferStorageMultisample =
+        (RenderbufferStorageMultisampleFn)SDL_GL_GetProcAddress("glRenderbufferStorageMultisampleEXT");
+    if (sFramebufferTexture2DMultisample != nullptr && sRenderbufferStorageMultisample != nullptr) {
+      glGetIntegerv(0x8D57 /* GL_MAX_SAMPLES_EXT */, &sMaxSamples);
+    }
+  }
+  printf("3D anti-aliasing: %s (up to %d samples)\n", sMaxSamples > 1 ? "available" : "not available", sMaxSamples);
+#endif
+}
+
+extern "C" int SIM_AntiAliasingMaxSamples(void) {
+#ifdef SIM_GLES
+  return sMaxSamples;
+#else
+  return 0;
+#endif
+}
+
+extern "C" int SIM_AntiAliasingSamples(void) {
+  return sSamples;
+}
+
+// (Re)creates the 3D framebuffer's storage at the wanted scale and anti-aliasing; leaves
+// the 3D framebuffer bound
+void SIM_SetInternalResolution(int internalRes) {
+  (void)internalRes;
+  sScale = WantedScale();
+  const int width = SIM_NDS_SCREEN_WIDTH * sScale;
+  const int height = SIM_NDS_SCREEN_HEIGHT * 2 * sScale;
+
+  glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, g3FrameBuffer);
   glBindRenderbuffer(GL_RENDERBUFFER, g3RenderBufferId);
-  glRenderbufferStorage(
-      GL_RENDERBUFFER, GL_DEPTH24_STENCIL8,
-      SIM_NDS_SCREEN_WIDTH * s_SIM_config.internalResolutionScale,
-      SIM_NDS_SCREEN_HEIGHT * 2 * s_SIM_config.internalResolutionScale);
+  sSamples = 0;
+#ifdef SIM_GLES
+  int samples = s_SIM_config.antiAliasing;
+  if (samples > sMaxSamples) {
+    samples = sMaxSamples;
+  }
+  if (samples > 1) {
+    sRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, width, height);
+    sFramebufferTexture2DMultisample(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g3RenderTextureId, 0, samples);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g3RenderBufferId);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+      sSamples = samples;
+    } else {
+      printf("3D anti-aliasing: the framebuffer wasn't complete with %d samples, off\n", samples);
+    }
+  }
+#endif
+  if (sSamples == 0) {
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g3RenderTextureId, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g3RenderBufferId);
+  }
+  // A new size starts empty
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
 static bool sChangeInternalResAfterRender = false;
@@ -838,9 +927,8 @@ void *SIM_RenderInit(void *arg) {
                          g3RenderTextureId, 0);
   glGenRenderbuffers(1, &g3RenderBufferId);
   glBindRenderbuffer(GL_RENDERBUFFER, g3RenderBufferId);
+  FindAntiAliasing();
   SIM_SetInternalResolution(s_SIM_config.internalResolutionScale);
-  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                            GL_RENDERBUFFER, g3RenderBufferId);
 
   // Check FBO status
   int fboStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
@@ -1397,6 +1485,21 @@ void *SIM_Render(void *arg) {
 
     glViewport(viewX, viewY, viewWidth, viewHeight);
 
+    // "Match the screen": the 3D scene at least as sharp as the screen it is shown on
+    {
+      const int screenPixels = (s_SIM_config.screenLayout == SIM_CONFIG_SCREEN_LAYOUT_VERTICAL && !dualScreen)
+                                   ? viewHeight / 2
+                                   : viewHeight;
+      int autoScale = (screenPixels + SIM_NDS_SCREEN_HEIGHT - 1) / SIM_NDS_SCREEN_HEIGHT;
+      autoScale = autoScale < 1 ? 1 : (autoScale > 8 ? 8 : autoScale);
+      if (autoScale != sAutoScale) {
+        sAutoScale = autoScale;
+        if (s_SIM_config.internalResolutionScale == 0) {
+          SIM_SetInternalResolutionAfterRender(0);
+        }
+      }
+    }
+
     // Set up the bounding box of the touch panel
     if (s_SIM_config.swapScreens) {
       switch (s_SIM_config.screenLayout) {
@@ -1933,6 +2036,7 @@ void *SIM_Render(void *arg) {
     }
 
     if(sChangeInternalResAfterRender) {
+      sChangeInternalResAfterRender = false;
       SIM_SetInternalResolution(sPendingInternalRes);
     }
 
@@ -1958,13 +2062,9 @@ void *SIM_Render(void *arg) {
 
   // Setup 3D Viewport
   if (s_reg_GX_POWCNT >> 15) {
-    glViewport(0, SIM_NDS_SCREEN_HEIGHT * s_SIM_config.internalResolutionScale,
-               SIM_NDS_SCREEN_WIDTH * s_SIM_config.internalResolutionScale,
-               SIM_NDS_SCREEN_HEIGHT * s_SIM_config.internalResolutionScale);
+    glViewport(0, SIM_NDS_SCREEN_HEIGHT * sScale, SIM_NDS_SCREEN_WIDTH * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
   } else {
-    glViewport(0, 0,
-               SIM_NDS_SCREEN_WIDTH * s_SIM_config.internalResolutionScale,
-               SIM_NDS_SCREEN_HEIGHT * s_SIM_config.internalResolutionScale);
+    glViewport(0, 0, SIM_NDS_SCREEN_WIDTH * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
   }
 
   // Activate 3D shader

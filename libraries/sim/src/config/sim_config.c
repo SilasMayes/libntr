@@ -56,6 +56,9 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "InternalResolutionScale")) {
         config->internalResolutionScale = atoi(value);
     }
+    if(MATCH("General", "AntiAliasing")) {
+        config->antiAliasing = (u8)atoi(value);
+    }
     if(MATCH("General", "WindowHeight")) {
         config->windowHeight = atoi(value);
     }
@@ -400,6 +403,7 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->vsyncInterval = 1;
     aConfig->capFrameRate = TRUE;
     aConfig->perfOverlay = FALSE;
+    aConfig->antiAliasing = 0;
     aConfig->fastForwardSpeed = 4;
     aConfig->fastForwardToggle = FALSE;
     aConfig->masterVolume = 127;
@@ -484,6 +488,7 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     
     fprintf(configFile, "[General]\n");
     fprintf(configFile, "InternalResolutionScale=%d\n", aConfig->internalResolutionScale);
+    fprintf(configFile, "AntiAliasing=%d\n", aConfig->antiAliasing);
     fprintf(configFile, "WindowHeight=%d\n", aConfig->windowHeight);
     fprintf(configFile, "WindowWidth=%d\n", aConfig->windowWidth);
     fprintf(configFile, "FullScreen=%s\n", BoolToString(aConfig->fullScreen));

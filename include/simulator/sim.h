@@ -107,6 +107,12 @@ void SIM_GetFrameTimings(SIM_FrameTimings *out);
 // shown. The game still runs with its input and vblank handlers as usual.
 void SIM_SkipNextFrame(void);
 
+// The 3D scene's scale in use (DS screens), and anti-aliasing: the most samples the GPU
+// takes (0: not available) and the samples in use
+int SIM_GetInternalScale(void);
+int SIM_AntiAliasingMaxSamples(void);
+int SIM_AntiAliasingSamples(void);
+
 // The DS clock (RTC) the game reads: the device's local time plus this many seconds
 void SIM_SetClockOffset(long long seconds);
 long long SIM_GetClockOffset(void);

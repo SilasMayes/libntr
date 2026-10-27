@@ -52,12 +52,32 @@ void SaveConfig() {
 void DrawDisplay() {
   SIM_config_type *config = SIM_GetConfigPtr();
 
-  int resolution = (int)config->internalResolutionScale;
-  if (Stepper("3D resolution", "How sharp 3D scenes are. Higher looks better and uses more power.", &resolution, 1, 20,
-              1, "%dx")) {
+  bool matchScreen = config->internalResolutionScale == 0;
+  if (Toggle("3D at the screen's sharpness", "3D scenes are drawn at least as sharp as the screen shows them, "
+             "however big that is. Off: choose the sharpness below.", &matchScreen)) {
+    config->internalResolutionScale = matchScreen ? 0 : (u32)SIM_GetInternalScale();
+    SIM_SetInternalResolutionAfterRender(0);
+    SaveConfig();
+  }
+  int resolution = matchScreen ? SIM_GetInternalScale() : (int)config->internalResolutionScale;
+  if (Stepper("3D resolution", "How sharp 3D scenes are, in DS screens. Higher looks better and uses more power.",
+              &resolution, 1, 20, 1, "%dx", !matchScreen)) {
     config->internalResolutionScale = (u32)resolution;
     SIM_SetInternalResolutionAfterRender(resolution);
     SaveConfig();
+  }
+
+  const int maxSamples = SIM_AntiAliasingMaxSamples();
+  if (maxSamples > 1) {
+    static const char *const kAA[] = {"Off", "2x", "4x"};
+    int aa = config->antiAliasing >= 4 ? 2 : (config->antiAliasing >= 2 ? 1 : 0);
+    const int choices = maxSamples >= 4 ? 3 : 2;
+    if (Choice("Smooth 3D edges", "Anti-aliasing: smooths the jagged edges of 3D models. Costs little on this "
+               "device's kind of GPU.", &aa, kAA, choices)) {
+      config->antiAliasing = (u8)(aa == 2 ? 4 : (aa == 1 ? 2 : 0));
+      SIM_SetInternalResolutionAfterRender(0);
+      SaveConfig();
+    }
   }
 
 #ifdef SDK_BUILD_ANDROID
