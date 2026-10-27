@@ -387,8 +387,13 @@ void Draw() {
   // What's shown changed: the pad's cursor goes to its default item
   static int sLastView = -2;
   const int view = wide || !sShowList ? sPage : -1;
-  if (view != sLastView) {
-    RequestFocus();
+  const bool viewChanged = view != sLastView;
+  if (viewChanged) {
+    // A narrow screen's page: its first item, below (the list it came from is gone, so
+    // there's no window for Dear ImGui to start in)
+    if (wide || sShowList) {
+      RequestFocus();
+    }
     sLastView = view;
   }
 
@@ -464,6 +469,9 @@ void Draw() {
     const Page &page = sPages[sPage];
     ImGui::PushID(page.name.c_str());
     backToList = BeginPane("##page", ImVec2(0, 0), io.DisplaySize, page.name.c_str(), "Settings", S(640.0f));
+    if (viewChanged) {
+      FocusNextItem();
+    }
     sPageMayTakeBack = !capturing;
     DrawPage(page);
     sPageMayTakeBack = false;
