@@ -1,5 +1,43 @@
 #include <nitro.h>
 
+#ifdef SDK_PORT
+// The inserted cartridge's flash (simulator/sim_gba_slot.h); asynchronous calls finish
+// before they return, calling back straight away
+#include <simulator/sim_gba_slot.h>
+
+static u32 CTRDGi_VirtualVerify (u16 sec_num, const u8 *src, u32 size)
+{
+	u8 sector[0x1000];
+	if (size > sizeof(sector)) {
+		size = sizeof(sector);
+	}
+	SIM_GBASlot_ReadFlash(sec_num, 0, sector, size);
+	for (u32 i = 0; i < size; i++) {
+		if (sector[i] != src[i]) {
+			return CTRDG_BACKUP_RESULT_ERROR;
+		}
+	}
+	return 0;
+}
+
+static u32 CTRDGi_VirtualWriteAndVerify (u16 sec_num, u8 *src, u32 verifysize)
+{
+	u32 result = SIM_GBASlot_WriteFlashSector(sec_num, src);
+	return result != 0 ? result : CTRDGi_VirtualVerify(sec_num, src, verifysize);
+}
+
+static void CTRDGi_VirtualDone (u32 result, u16 sec_num, CTRDG_TASK_FUNC callback)
+{
+	if (callback != NULL) {
+		CTRDGTaskInfo info;
+		MI_CpuClear8(&info, sizeof(info));
+		info.result = result;
+		info.sec_num = sec_num;
+		(void)callback(&info);
+	}
+}
+#endif
+
 u32 CTRDGi_ReadAgbFlashCore(CTRDGTaskInfo *arg);
 u32 CTRDGi_VerifyAgbFlashCore(CTRDGTaskInfo *arg);
 u32 CTRDGi_WriteAndVerifyAgbFlashSectorCore(CTRDGTaskInfo *arg);
@@ -263,6 +301,13 @@ u32 CTRDGi_WriteAndVerifyAgbFlashSectorCore (CTRDGTaskInfo *arg)
 
 void CTRDG_ReadAgbFlash (u16 sec_num, u32 offset, u8 *dst, u32 size)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		SIM_GBASlot_ReadFlash(sec_num, offset, dst, size);
+		return;
+	}
+#endif
+
 	CTRDGTaskInfo p;
 	p.sec_num = sec_num;
 	p.offset = offset;
@@ -274,24 +319,48 @@ void CTRDG_ReadAgbFlash (u16 sec_num, u32 offset, u8 *dst, u32 size)
 
 u16 CTRDG_EraseAgbFlashChip (void)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		return (u16)SIM_GBASlot_EraseFlash(-1);
+	}
+#endif
+
 	u16 result = (*CTRDGi_EraseAgbFlashChip)();
 	return result;
 }
 
 u16 CTRDG_EraseAgbFlashSector (u16 secNo)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		return (u16)SIM_GBASlot_EraseFlash(secNo);
+	}
+#endif
+
 	u16 result = (*CTRDGi_EraseAgbFlashSector)(secNo);
 	return result;
 }
 
 u16 CTRDG_WriteAgbFlashSector (u16 secNo, u8 *src)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		return (u16)SIM_GBASlot_WriteFlashSector(secNo, src);
+	}
+#endif
+
 	u16 result = (*CTRDGi_WriteAgbFlashSector)(secNo, src);
 	return result;
 }
 
 u32 CTRDG_VerifyAgbFlash (u16 sec_num, u8 *src, u32 size)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		return CTRDGi_VirtualVerify(sec_num, src, size);
+	}
+#endif
+
 	u32 result;
 	CTRDGTaskInfo p;
 	p.sec_num = sec_num;
@@ -304,6 +373,12 @@ u32 CTRDG_VerifyAgbFlash (u16 sec_num, u8 *src, u32 size)
 
 u32 CTRDG_WriteAndVerifyAgbFlash (u16 sec_num, u8 *src, u32 verifysize)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		return CTRDGi_VirtualWriteAndVerify(sec_num, src, verifysize);
+	}
+#endif
+
 	u32 result;
 	CTRDGTaskInfo p;
 	p.sec_num = sec_num;
@@ -316,6 +391,14 @@ u32 CTRDG_WriteAndVerifyAgbFlash (u16 sec_num, u8 *src, u32 verifysize)
 
 void CTRDG_ReadAgbFlashAsync (u16 sec_num, u32 offset, u8 *dst, u32 size, CTRDG_TASK_FUNC callback)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		SIM_GBASlot_ReadFlash(sec_num, offset, dst, size);
+		CTRDGi_VirtualDone(0, sec_num, callback);
+		return;
+	}
+#endif
+
 	CTRDGTaskInfo p;
 	p.sec_num = sec_num;
 	p.offset = offset;
@@ -327,21 +410,49 @@ void CTRDG_ReadAgbFlashAsync (u16 sec_num, u32 offset, u8 *dst, u32 size, CTRDG_
 
 void CTRDG_EraseAgbFlashChipAsync (CTRDG_TASK_FUNC callback)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		CTRDGi_VirtualDone(SIM_GBASlot_EraseFlash(-1), 0, callback);
+		return;
+	}
+#endif
+
 	(*CTRDGi_EraseAgbFlashChipAsync)(callback);
 }
 
 void CTRDG_EraseAgbFlashSectorAsync (u16 secNo, CTRDG_TASK_FUNC callback)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		CTRDGi_VirtualDone(SIM_GBASlot_EraseFlash(secNo), secNo, callback);
+		return;
+	}
+#endif
+
 	(*CTRDGi_EraseAgbFlashSectorAsync)(secNo, callback);
 }
 
 void CTRDG_WriteAgbFlashSectorAsync (u16 secNo, u8 *src, CTRDG_TASK_FUNC callback)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		CTRDGi_VirtualDone(SIM_GBASlot_WriteFlashSector(secNo, src), secNo, callback);
+		return;
+	}
+#endif
+
 	(*CTRDGi_WriteAgbFlashSectorAsync)(secNo, src, callback);
 }
 
 void CTRDG_VerifyAgbFlashAsync (u16 sec_num, u8 *src, u32 size, CTRDG_TASK_FUNC callback)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		CTRDGi_VirtualDone(CTRDGi_VirtualVerify(sec_num, src, size), sec_num, callback);
+		return;
+	}
+#endif
+
 	CTRDGTaskInfo p;
 	p.sec_num = sec_num;
 	p.data = src;
@@ -352,6 +463,13 @@ void CTRDG_VerifyAgbFlashAsync (u16 sec_num, u8 *src, u32 size, CTRDG_TASK_FUNC 
 void CTRDG_WriteAndVerifyAgbFlashAsync (u16 sec_num, u8 *src, u32 verifysize,
                                         CTRDG_TASK_FUNC callback)
 {
+#ifdef SDK_PORT
+	if (SIM_GBASlot_IsInserted()) {
+		CTRDGi_VirtualDone(CTRDGi_VirtualWriteAndVerify(sec_num, src, verifysize), sec_num, callback);
+		return;
+	}
+#endif
+
 	CTRDGTaskInfo p;
 	p.sec_num = sec_num;
 	p.data = src;

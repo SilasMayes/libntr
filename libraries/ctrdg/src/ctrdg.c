@@ -4,6 +4,14 @@
 
 #include <nitro/os/ARM9/cache.h>
 
+#ifdef SDK_PORT
+// A GBA cartridge from a save file (simulator/sim_gba_slot.h) answers while one is inserted
+#include <simulator/sim_gba_slot.h>
+#define CTRDGi_VIRTUAL() SIM_GBASlot_IsInserted()
+#else
+#define CTRDGi_VIRTUAL() FALSE
+#endif
+
 CTRDGWork CTRDGi_Work;
 
 static BOOL CTRDGi_EnableFlag = FALSE;
@@ -35,6 +43,10 @@ BOOL CTRDG_IsBitID (u8 bitID)
 
 BOOL CTRDGi_IsBitIDAtInit (u8 bitID)
 {
+	if (CTRDGi_VIRTUAL()) {
+		return FALSE;
+	}
+
 	BOOL retval = FALSE;
 
 	CTRDGModuleInfo *cip = CTRDGi_GetModuleInfoAddr();
@@ -53,6 +65,10 @@ BOOL CTRDG_IsNumberID (u8 numberID)
 
 BOOL CTRDGi_IsNumberIDAtInit (u8 numberID)
 {
+	if (CTRDGi_VIRTUAL()) {
+		return FALSE;
+	}
+
 	BOOL retval = FALSE;
 
 	CTRDGModuleInfo *cip = CTRDGi_GetModuleInfoAddr();
@@ -83,6 +99,10 @@ BOOL CTRDG_IsOptionCartridge (void)
 
 BOOL CTRDGi_IsAgbCartridgeAtInit (void)
 {
+	if (CTRDGi_VIRTUAL()) {
+		return TRUE;
+	}
+
 	CTRDGModuleInfo *cip = CTRDGi_GetModuleInfoAddr();
 	return cip->isAgbCartridge;
 }
@@ -100,6 +120,12 @@ u32 CTRDG_GetAgbGameCode (void)
 
 u32 CTRDGi_GetAgbGameCodeAtInit (void)
 {
+#ifdef SDK_PORT
+	if (CTRDGi_VIRTUAL()) {
+		return SIM_GBASlot_GameCode();
+	}
+#endif
+
 	CTRDGModuleInfo *cip = CTRDGi_GetModuleInfoAddr();
 	u32 retval = FALSE;
 
@@ -123,6 +149,12 @@ u16 CTRDG_GetAgbMakerCode (void)
 
 u16 CTRDGi_GetAgbMakerCodeAtInit (void)
 {
+#ifdef SDK_PORT
+	if (CTRDGi_VIRTUAL()) {
+		return SIM_GBASlot_MakerCode();
+	}
+#endif
+
 	CTRDGModuleInfo *cip = CTRDGi_GetModuleInfoAddr();
 	u16 retval = FALSE;
 
@@ -135,6 +167,10 @@ u16 CTRDGi_GetAgbMakerCodeAtInit (void)
 
 BOOL CTRDG_IsPulledOut (void)
 {
+	if (CTRDGi_VIRTUAL()) {
+		return FALSE;
+	}
+
 	CTRDGModuleInfo *cip = CTRDGi_GetModuleInfoAddr();
 
 #if SDK_VERSION_MAJOR == 5
@@ -170,6 +206,10 @@ BOOL CTRDG_IsOptionCartridgePulledOut (void)
 
 BOOL CTRDG_IsExisting (void)
 {
+	if (CTRDGi_VIRTUAL()) {
+		return TRUE;
+	}
+
 	#if (SDK_VERSION_MAJOR == 5) && defined(SDK_TWLLTD)
 	return FALSE;
 	#endif
@@ -305,6 +345,13 @@ BOOL CTRDG_CpuCopy32 (const void *src, void *dest, u32 size)
 
 BOOL CTRDGi_CopyCommon (u32 dmaNo, const void *src, void *dest, u32 size, u32 forwardType)
 {
+#ifdef SDK_PORT
+	// Reading the inserted cartridge's ROM
+	if (CTRDGi_VIRTUAL()) {
+		return SIM_GBASlot_ReadRom(src, dest, size);
+	}
+#endif
+
 	if (!CTRDG_IsExisting()) {
 		return FALSE;
 	}
@@ -385,6 +432,23 @@ BOOL CTRDG_Write32 (u32 *address, u32 data)
 
 BOOL CTRDGi_AccessCommon (void *address, u32 data, void *rdata, u32 accessType)
 {
+#ifdef SDK_PORT
+	if (CTRDGi_VIRTUAL()) {
+		u32 size = (accessType == CTRDGi_ACCESS_READ8) ? 1 : (accessType == CTRDGi_ACCESS_READ16) ? 2 : 4;
+		if (accessType != CTRDGi_ACCESS_READ8 && accessType != CTRDGi_ACCESS_READ16 && accessType != CTRDGi_ACCESS_READ32) {
+			return TRUE; // writes to the ROM go nowhere
+		}
+		u8 bytes[4] = { 0 };
+		if (!SIM_GBASlot_ReadRom(address, bytes, size)) {
+			return FALSE;
+		}
+		if (rdata) {
+			MI_CpuCopy8(bytes, rdata, size);
+		}
+		return TRUE;
+	}
+#endif
+
 	if (!CTRDG_IsExisting()) {
 		return FALSE;
 	}

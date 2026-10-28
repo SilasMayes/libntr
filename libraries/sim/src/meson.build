@@ -27,6 +27,7 @@ libsim_srcs = files(
     'sim_debug.cpp',
     'sim_display.cpp',
     'sim_files.cpp',
+    'sim_gba_slot.c',
     'sim_g2.cpp',
     'sim_g3_CommandProcessor.cpp',
     'sim_g3_Texture.cpp',

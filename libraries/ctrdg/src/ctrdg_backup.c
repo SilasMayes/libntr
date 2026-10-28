@@ -1,5 +1,9 @@
 #include <nitro.h>
 
+#ifdef SDK_PORT
+#include <simulator/sim_gba_slot.h>
+#endif
+
 extern const CTRDGiFlashTypePlus defaultFlash1M;
 extern const CTRDGiFlashTypePlus MX29L010;
 extern const CTRDGiFlashTypePlus LE26FV10N1TS_10;
@@ -34,6 +38,13 @@ static const u16 readidtime[] = {
 
 u16 CTRDG_IdentifyAgbBackup (CTRDGBackupType type)
 {
+#ifdef SDK_PORT
+	// The inserted cartridge (simulator/sim_gba_slot.h) has a 1 Mbit flash chip
+	if (SIM_GBASlot_IsInserted()) {
+		return (u16)((type == CTRDG_BACKUP_TYPE_FLASH_1M && SIM_GBASlot_HasFlash1M()) ? 0 : 1);
+	}
+#endif
+
 	u16 result = 1;
 	u16 flashID;
 	const CTRDGiFlashTypePlus *const *flp;
