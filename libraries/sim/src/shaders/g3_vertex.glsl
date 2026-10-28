@@ -9,9 +9,12 @@ smooth out vec2 fragTexCoord;
 smooth out vec4 fragInColor;
 smooth out vec4 coords;
 
+// Widescreen scenes the game didn't widen itself: narrower, so 4:3 shapes stay 4:3
+uniform float xScale;
+
 void main()
 {
-    gl_Position = vec4(position.x, position.y, position.z, 1.0);
+    gl_Position = vec4(position.x * xScale, position.y, position.z, 1.0);
     coords = vec4(position.x, position.y, position.z, 1.0);
     fragTexCoord = vec2(texCoord.x, texCoord.y);
     fragInColor = inColor;

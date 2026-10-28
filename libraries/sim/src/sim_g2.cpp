@@ -45,6 +45,27 @@ static u8 *bgsTexTable[] = {bg0stex, bg1stex, bg2stex, bg3stex};
 static s32 bgAffineX[4];
 static s32 bgAffineY[4];
 
+// Widescreen layers (G2SIM_DrawBGWide): text-mode lines start sLineStart pixels left of the
+// screen and are sLineWidth wide, drawn into sWideOut (kWideTexWidth x 192, rows bottom
+// to top like the layer textures' top half). Otherwise lines are the screen's 256 pixels.
+void G2SIM_PlotPixel(u8 *screenBuf, u8 r, u8 g, u8 b, u32 x, u32 y, BOOL isSub);
+static const int kWideTexWidth = 512;
+static int sLineStart = 0;
+static int sLineWidth = SIM_NDS_SCREEN_WIDTH;
+static u8 *sWideOut = nullptr;
+
+static void PlotLinePixel(u8 *screenBuf, u8 r, u8 g, u8 b, u32 x, u32 y, BOOL isSub) {
+  if (sWideOut == nullptr) {
+    G2SIM_PlotPixel(screenBuf, r, g, b, x, y, isSub);
+    return;
+  }
+  u8 *pixel = sWideOut + 4 * (x + kWideTexWidth * (SIM_NDS_SCREEN_HEIGHT - 1 - y));
+  pixel[0] = r;
+  pixel[1] = g;
+  pixel[2] = b;
+  pixel[3] = 255;
+}
+
 static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub);
 static void DrawBGLine_Extended(u32 line, u32 bgnum, u8 mosaic, u8 isSub);
 static void DrawBGLine_Affine(u32 line, u32 bgnum, u8 mosaic, u8 isSub);
@@ -241,6 +262,41 @@ void G2SIM_DrawBG(u8 bgNum, u8 bgMode, u8 bg03D, u8 isSub) {
 #endif
 }
 
+bool G2SIM_DrawBGWide(u8 bgNum, u8 bgMode, int width) {
+  const bool text = bgNum <= 1 ? bgMode <= 5 : bgNum == 2 ? (bgMode <= 1 || bgMode == 3) : bgMode == 0;
+  if (!text || width <= SIM_NDS_SCREEN_WIDTH || width > kWideTexWidth || !s_SIM_DBG_BGenable[bgNum]) {
+    return false;
+  }
+  static u8 sWideBuf[4 * kWideTexWidth * SIM_NDS_SCREEN_HEIGHT];
+  static GLuint sWideTextures[4];
+  if (sWideTextures[bgNum] == 0) {
+    glGenTextures(1, &sWideTextures[bgNum]);
+    glBindTexture(GL_TEXTURE_2D, sWideTextures[bgNum]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kWideTexWidth, SIM_NDS_SCREEN_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 nullptr);
+  }
+
+  memset(sWideBuf, 0, sizeof(sWideBuf));
+  sLineStart = -(width - SIM_NDS_SCREEN_WIDTH) / 2;
+  sLineWidth = width;
+  sWideOut = sWideBuf;
+  for (int j = 0; j < SIM_NDS_SCREEN_HEIGHT; j++) {
+    DrawBGLine_Text(j, bgNum, 0, FALSE);
+  }
+  sLineStart = 0;
+  sLineWidth = SIM_NDS_SCREEN_WIDTH;
+  sWideOut = nullptr;
+
+  glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[bgNum]);
+  glBindTexture(GL_TEXTURE_2D, sWideTextures[bgNum]);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kWideTexWidth, SIM_NDS_SCREEN_HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, sWideBuf);
+  return true;
+}
+
 void G2SIM_DrawOBJ(u32 line, u8 isSub, int bgnum) {
   u32 dispcnt;
   u16 *oam;
@@ -390,7 +446,7 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
 
   u8 color;
 
-  u16 xoff = 0;
+  u16 xoff = (u16)sLineStart; // wide lines start left of the screen
   u16 yoff = line;
 
   u32 widexmask;
@@ -533,7 +589,7 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
       lastxpos = xoff;
     }
 
-    for (i = 0; i < 256; i++) {
+    for (i = 0; i < (u32)sLineWidth; i++) {
       u32 xpos;
       if (mosaic) {
         xpos = xoff - s_mosaicTable[7][i];
@@ -593,8 +649,9 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
         u8 windowBottom = win0V & 0b11111111;
         u8 windowTop = (win0V >> 8) & 0b11111111;
 
-        if (i >= windowLeft && i < windowRight && line >= windowTop &&
-            line < windowBottom) {
+        const int screenX = (int)i + sLineStart;
+        if (screenX >= 0 && screenX < SIM_NDS_SCREEN_WIDTH && screenX >= windowLeft && screenX < windowRight &&
+            line >= windowTop && line < windowBottom) {
           // Inside window
           windowPass = ((winIn >> bgnum) & 1);
         } else {
@@ -610,7 +667,7 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
           u8 g;
           u8 b;
           SIM_u16ToRGB(curpal[color], &r, &g, &b);
-          G2SIM_PlotPixel(pixelBuf, r, g, b, i, line, isSub);
+          PlotLinePixel(pixelBuf, r, g, b, i, line, isSub);
         }
       }
 
@@ -632,7 +689,7 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
       lastxpos = xoff;
     }
 
-    for (i = 0; i < 256; i++) {
+    for (i = 0; i < (u32)sLineWidth; i++) {
       u32 xpos;
       if (mosaic) {
         xpos = xoff - s_mosaicTable[7][i];
@@ -688,8 +745,9 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
         u8 windowBottom = win0V & 0b11111111;
         u8 windowTop = (win0V >> 8) & 0b11111111;
 
-        if (i >= windowLeft && i < windowRight && line >= windowTop &&
-            line < windowBottom) {
+        const int screenX = (int)i + sLineStart;
+        if (screenX >= 0 && screenX < SIM_NDS_SCREEN_WIDTH && screenX >= windowLeft && screenX < windowRight &&
+            line >= windowTop && line < windowBottom) {
           // Inside window
           windowPass = ((winIn >> bgnum) & 1);
         } else {
@@ -703,7 +761,7 @@ static void DrawBGLine_Text(u32 line, u32 bgnum, u8 mosaic, u8 isSub) {
         u8 b;
         if (windowPass != 0) {
           SIM_u16ToRGB(curpal[color], &r, &g, &b);
-          G2SIM_PlotPixel(pixelBuf, r, g, b, i, line, isSub);
+          PlotLinePixel(pixelBuf, r, g, b, i, line, isSub);
         }
       }
 

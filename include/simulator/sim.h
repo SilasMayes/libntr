@@ -119,6 +119,13 @@ int SIM_AntiAliasingSamples(void);
 // SIM_IsWidescreenActive(), the game widens its camera's projection by SIM_WidescreenRatio()
 // (the 3D scene's width over the DS screen's). Both change only between frames.
 void SIM_SetWidescreenScene(BOOL wide);
+// How a wide scene is made, asked for with SIM_SetWidescreenScene (every frame too).
+// scale3D: the game leaves its projection 4:3 and libntr narrows the 3D instead, keeping
+// its shapes and showing more at the sides (2D-positioned 3D sprites, say); the game's own
+// culling still sees 4:3 then. wideBgLayers: main-engine text-mode BG layers (bit n: BGn)
+// drawn across the whole width from their tilemaps (a backdrop that scrolls), not only
+// in the 4:3 middle. Default: neither (the game widens its camera; 2D stays 4:3).
+void SIM_SetWidescreenSceneOptions(BOOL scale3D, u8 wideBgLayers);
 BOOL SIM_IsWidescreenActive(void);
 float SIM_WidescreenRatio(void);
 

@@ -709,8 +709,19 @@ static int sWide3dWidth = SIM_NDS_SCREEN_WIDTH; // the 3D being drawn: its width
 static int sWideWidth = SIM_NDS_SCREEN_WIDTH;   // the top display's
 static int sFboWidth = SIM_NDS_SCREEN_WIDTH;    // the 3D framebuffer's
 
+// How the wide scene is made (SIM_SetWidescreenSceneOptions), as asked and as latched
+static bool sWideScale3DRequested = false;
+static u8 sWideBgRequested = 0;
+static bool sWideScale3D = false; // libntr narrows the 3D to keep its 4:3 shapes
+static u8 sWideBgLayers = 0;      // main-engine BG layers drawn across the whole width
+
 extern "C" void SIM_SetWidescreenScene(BOOL wide) {
   sWideRequested = wide;
+}
+
+extern "C" void SIM_SetWidescreenSceneOptions(BOOL scale3D, u8 wideBgLayers) {
+  sWideScale3DRequested = scale3D != FALSE;
+  sWideBgRequested = wideBgLayers & 0x0F;
 }
 
 extern "C" BOOL SIM_IsWidescreenActive(void) {
@@ -1193,10 +1204,17 @@ static void DrawEngine(BOOL isSub) {
   // Backgrounds (each binds and uploads its texture)
   u8 *bgBufs[4] = {isSub ? bg0stex : bg0tex, isSub ? bg1stex : bg1tex, isSub ? bg2stex : bg2tex,
                    isSub ? bg3stex : bg3tex};
+  // Widescreen: the layers the game asked for span the whole top screen
+  const bool wideEngine = sWideActive && !isSub && (dispSel ? !isSub : isSub);
+  int wideBgMask = 0;
   for (int i = 0; i < 4; i++) {
     const int bg = bgOrder[i];
     glActiveTexture(GL_TEXTURE0 + s_bgTexUnits[bg]);
     if (bgEnabled[bg] && !(bg == 0 && bg0as3d)) {
+      if (wideEngine && ((sWideBgLayers >> bg) & 1) && G2SIM_DrawBGWide((u8)bg, bgMode, sWide3dWidth)) {
+        wideBgMask |= 1 << bg;
+        continue;
+      }
       memset(bgBufs[bg] + halfOffset, 0, kLayerHalfBytes);
       G2SIM_DrawBG(bg, bgMode, bg0as3d, isSub);
     } else if (bgEnabled[bg]) {
@@ -1257,6 +1275,10 @@ static void DrawEngine(BOOL isSub) {
                      wideHere ? (float)sWide3dWidth / (float)SIM_NDS_SCREEN_WIDTH : 1.0f);
   glProgramUniform1f(g2shaderProgramID, glGetUniformLocation(g2shaderProgramID, "tex3dScaleS"),
                      (float)(wideHere ? sWide3dWidth : SIM_NDS_SCREEN_WIDTH) / (float)sFboWidth);
+  glProgramUniform1i(g2shaderProgramID, glGetUniformLocation(g2shaderProgramID, "wideBgMask"),
+                     wideHere ? wideBgMask : 0);
+  glProgramUniform1f(g2shaderProgramID, glGetUniformLocation(g2shaderProgramID, "wideBgScaleS"),
+                     (float)sWide3dWidth / 512.0f);
 
   // Pass master bright info to the shader
   float masterBrightFactor = isSub
@@ -2155,6 +2177,8 @@ void *SIM_Render(void *arg) {
     }
     sWideActive = wide;
     sWide3dWidth = wide ? sFboWidth : SIM_NDS_SCREEN_WIDTH;
+    sWideScale3D = wide && sWideScale3DRequested;
+    sWideBgLayers = wide ? sWideBgRequested : 0;
   }
 
   // Setup 3D Viewport
@@ -2166,6 +2190,10 @@ void *SIM_Render(void *arg) {
 
   // Activate 3D shader
   glUseProgram(g3shaderProgramID);
+  // A wide scene whose projection the game left at 4:3: narrowed here, so shapes keep their
+  // proportions and more is seen at the sides
+  glProgramUniform1f(g3shaderProgramID, glGetUniformLocation(g3shaderProgramID, "xScale"),
+                     sWideScale3D ? (float)SIM_NDS_SCREEN_WIDTH / (float)sWide3dWidth : 1.0f);
   GpuTimerBegin(GPU_3D); // until the next frame's drawing starts
 
   glEnable(GL_DEPTH_TEST);

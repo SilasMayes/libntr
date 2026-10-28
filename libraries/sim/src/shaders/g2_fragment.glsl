@@ -20,6 +20,10 @@ uniform int bg0as3d;
 // this screen's 3D uses.
 uniform float wideRatio;
 uniform float tex3dScaleS;
+// BG layers drawn across the whole wide screen (bit n: BGn), in textures wideBgScaleS of
+// whose width they use, holding only this screen (G2SIM_DrawBGWide)
+uniform int wideBgMask;
+uniform float wideBgScaleS;
 
 smooth in vec2 fragTexCoord;
 //uniform float inAlpha;
@@ -51,9 +55,13 @@ void main()
     } else {
         bgc[0] = inside2d ? texture(bgTexture[0], c2d) : none;
     }
-    bgc[1] = inside2d ? texture(bgTexture[1], c2d) : none;
-    bgc[2] = inside2d ? texture(bgTexture[2], c2d) : none;
-    bgc[3] = inside2d ? texture(bgTexture[3], c2d) : none;
+    vec2 cWide = vec2(fragTexCoord.s * wideBgScaleS, (fragTexCoord.t - 0.5) * 2.0);
+    if ((wideBgMask & 1) != 0 && bg0as3d == 0) {
+        bgc[0] = texture(bgTexture[0], cWide);
+    }
+    bgc[1] = (wideBgMask & 2) != 0 ? texture(bgTexture[1], cWide) : (inside2d ? texture(bgTexture[1], c2d) : none);
+    bgc[2] = (wideBgMask & 4) != 0 ? texture(bgTexture[2], cWide) : (inside2d ? texture(bgTexture[2], c2d) : none);
+    bgc[3] = (wideBgMask & 8) != 0 ? texture(bgTexture[3], cWide) : (inside2d ? texture(bgTexture[3], c2d) : none);
     vec4 objc[4];
     objc[0] = inside2d ? texture(objTexture[0], c2d) : none;
     objc[1] = inside2d ? texture(objTexture[1], c2d) : none;
