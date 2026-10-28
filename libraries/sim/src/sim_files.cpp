@@ -1,10 +1,13 @@
 // File picking for imports/exports. See include/simulator/sim_files.h
 #include <simulator/sim_files.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <filesystem>
 #include <mutex>
 #include <string>
+#include <system_error>
 
 #ifdef SDK_BUILD_ANDROID
 #include <SDL2/SDL.h>
@@ -17,13 +20,15 @@
 
 namespace {
 
-enum class Kind { NONE, OPEN, FOLDER, SAVE };
+enum class Kind { NONE, OPEN, FOLDER, IMPORT, SAVE };
 
 Kind sKind = Kind::NONE;
 SIM_FileOpenedFn sOpenedFn = nullptr;
 SIM_FileSavedFn sSavedFn = nullptr;
 void *sUser = nullptr;
 std::string sSourcePath;
+std::string sImportExtensions; // ",.png,.dds,"
+std::string sImportTarget;
 
 void Finish(const char *openedPath, bool saved) {
   Kind kind = sKind;
@@ -36,7 +41,7 @@ void Finish(const char *openedPath, bool saved) {
   sSavedFn = nullptr;
   sUser = nullptr;
 
-  if ((kind == Kind::OPEN || kind == Kind::FOLDER) && openedFn != nullptr) {
+  if ((kind == Kind::OPEN || kind == Kind::FOLDER || kind == Kind::IMPORT) && openedFn != nullptr) {
     openedFn(openedPath, user);
   } else if (kind == Kind::SAVE && savedFn != nullptr) {
     savedFn(saved ? TRUE : FALSE, user);
@@ -148,6 +153,42 @@ extern "C" void SIM_Files_PickFolder(const char *title, const char *gameCode, SI
 #endif
 }
 
+extern "C" void SIM_Files_ImportFolder(const char *title, const char *extensions, const char *targetDir,
+                                       SIM_FileOpenedFn done, void *user) {
+  if (sKind != Kind::NONE) {
+    if (done != nullptr) {
+      done(nullptr, user);
+    }
+    return;
+  }
+  sKind = Kind::IMPORT;
+  sOpenedFn = done;
+  sUser = user;
+  sImportExtensions = std::string(",") + extensions + ",";
+  sImportTarget = targetDir;
+
+#ifdef SDK_BUILD_ANDROID
+  (void)title;
+  sResult = RESULT_NONE;
+  JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+  bool started = false;
+  if (env != nullptr) {
+    jstring jExtensions = env->NewStringUTF(extensions);
+    jstring jTarget = env->NewStringUTF(targetDir);
+    started = CallActivity("importFolder", "(Ljava/lang/String;Ljava/lang/String;)V", jExtensions, jTarget);
+    env->DeleteLocalRef(jExtensions);
+    env->DeleteLocalRef(jTarget);
+  }
+  if (!started) {
+    Finish(nullptr, false);
+  }
+#else
+  IGFD::FileDialogConfig config;
+  config.path = ".";
+  ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, title, nullptr, config);
+#endif
+}
+
 extern "C" void SIM_Files_SaveCopy(const char *title, const char *sourcePath, const char *suggestedName,
                                    SIM_FileSavedFn done, void *user) {
   if (sKind != Kind::NONE) {
@@ -217,6 +258,41 @@ static bool SimCopyFile(const std::string &from, const std::string &to) {
 }
 #endif
 
+#ifndef SDK_BUILD_ANDROID
+// The picked folder's files with the wanted extensions, into sImportTarget/NAME
+static std::string ImportFolder(const std::string &from) {
+  namespace fs = std::filesystem;
+  std::error_code error;
+  fs::path source(from);
+  std::string name = source.filename().string();
+  if (name.empty()) {
+    name = source.parent_path().filename().string();
+  }
+  if (name.empty()) {
+    name = "imported";
+  }
+  fs::path target = fs::path(sImportTarget) / name;
+  int copied = 0;
+  for (fs::recursive_directory_iterator it(source, fs::directory_options::skip_permission_denied, error), end;
+       !error && it != end; it.increment(error)) {
+    if (!it->is_regular_file(error)) {
+      continue;
+    }
+    std::string extension = it->path().extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return (char)tolower(c); });
+    if (extension.empty() || sImportExtensions.find("," + extension + ",") == std::string::npos) {
+      continue;
+    }
+    fs::path out = target / fs::relative(it->path(), source, error);
+    fs::create_directories(out.parent_path(), error);
+    if (SimCopyFile(it->path().string(), out.string())) {
+      copied++;
+    }
+  }
+  return copied > 0 ? target.string() : std::string();
+}
+#endif
+
 extern "C" void SIM_Files_Update(void) {
   if (sKind == Kind::NONE) {
     return;
@@ -240,13 +316,16 @@ extern "C" void SIM_Files_Update(void) {
   if (ImGuiFileDialog::Instance()->Display(kDialogKey, ImGuiWindowFlags_NoCollapse, minSize)) {
     bool accepted = ImGuiFileDialog::Instance()->IsOk();
     std::string chosen = accepted ? ImGuiFileDialog::Instance()->GetFilePathName() : std::string();
-    if (accepted && sKind == Kind::FOLDER && chosen.empty()) {
+    if (accepted && (sKind == Kind::FOLDER || sKind == Kind::IMPORT) && chosen.empty()) {
       chosen = ImGuiFileDialog::Instance()->GetCurrentPath();
     }
     ImGuiFileDialog::Instance()->Close();
 
     if (sKind == Kind::OPEN || sKind == Kind::FOLDER) {
       Finish(accepted ? chosen.c_str() : nullptr, accepted);
+    } else if (sKind == Kind::IMPORT) {
+      std::string folder = accepted ? ImportFolder(chosen) : std::string();
+      Finish(folder.empty() ? nullptr : folder.c_str(), !folder.empty());
     } else {
       bool saved = accepted && SimCopyFile(sSourcePath, chosen);
       Finish(nullptr, saved);

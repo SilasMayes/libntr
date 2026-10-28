@@ -15,6 +15,7 @@
 #include <simulator/sim_crc32.h>
 #include "simulator/sim_g3_TextureCache.hpp"
 #include "simulator/sim_g3_Texture.hpp"
+#include "simulator/sim_texture_packs.h"
 
 #ifdef SDK_BUILD_LINUX
 #include <signal.h>
@@ -271,7 +272,27 @@ static void G3SIM_FlushArrayInner()
 		}
 
 		u32 textureCRC = SIM_crc32buf(vramTex, vramTexBufSize);
+		// The same data drawn with colour 0 transparent decodes differently
+		if (s_texImageParam.color0) {
+			paletteCRC ^= 0x9E3779B9;
+		}
 		texture = sTextureCache.GetTexture(textureCRC, paletteCRC);
+
+		// A texture pack's replacement (simulator/sim_texture_packs.h)
+		std::string packName;
+		if (texture == nullptr && s_texImageParam.textureFormat != GX_TEXFMT_COMP4x4
+		    && (SIM::TexturePacks::Replacing() || SIM::TexturePacks::Dumping())) {
+			packName = SIM::TexturePacks::Name(s_texImageParam.textureFormat, s_texImageParam.textureSSize,
+			                                   s_texImageParam.textureTSize, textureCRC, vramPltt,
+			                                   s_texImageParam.color0 != 0);
+			if (SIM::TexturePacks::Replacing()) {
+				texture = SIM::TexturePacks::Replacement(packName);
+				if (texture != nullptr) {
+					sTextureCache.AddTexture(textureCRC, paletteCRC, texture);
+				}
+			}
+		}
+
 		if(texture == nullptr) {
 			// decode texture and create it in the cache
 			//Convert the DS texture data into a format opengl can understand
@@ -306,6 +327,10 @@ static void G3SIM_FlushArrayInner()
 
 			// This creates a GL texture and uploads it to the GPU with glTexImage2D
 			texture = std::make_shared<SIM::G3::Texture>(s_texImageParam.textureTSize, s_texImageParam.textureSSize, outTexBuf);
+
+			if (!packName.empty() && SIM::TexturePacks::Dumping()) {
+				SIM::TexturePacks::Dump(packName, outTexBuf, s_texImageParam.textureSSize, s_texImageParam.textureTSize);
+			}
 
 			sTextureCache.AddTexture(textureCRC, paletteCRC, texture);
 
@@ -483,4 +508,10 @@ void G3SIM_DrawItems()
 		free(item->verts);
 	}
 	s_G3DrawItemListCount = 0;
+
+	// Texture packs reloaded or switched: textures are made again from here on (nothing
+	// drawn uses the old ones any more)
+	if (SIM::TexturePacks::TakeChanged()) {
+		sTextureCache.Clear();
+	}
 }

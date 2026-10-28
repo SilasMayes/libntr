@@ -16,6 +16,7 @@ class TextureCache {
 
   void AddTexture(u32 textureCRC, u32 paletteCRC, std::shared_ptr<Texture> texture);
   std::shared_ptr<Texture> GetTexture(u32 textureCRC, u32 paletteCRC);
+  void Clear();
   
  private:
   u64 GetCombinedCRC(u32 textureCRC, u32 paletteCRC);

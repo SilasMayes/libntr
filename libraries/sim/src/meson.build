@@ -43,6 +43,7 @@ libsim_srcs = files(
     'sim_settings.cpp',
     'sim_ui.cpp',
     'sim_shaders.cpp',
+    'sim_texture_packs.cpp',
     'sim_vars.c'
 )
 

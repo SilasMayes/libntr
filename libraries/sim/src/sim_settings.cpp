@@ -3,7 +3,9 @@
 
 #include "simulator/config/sim_config.h"
 #include "simulator/sim.h"
+#include "simulator/sim_files.h"
 #include "simulator/sim_gui.hpp"
+#include "simulator/sim_texture_packs.h"
 #include "simulator/sim_ui.hpp"
 #ifdef SDK_BUILD_ANDROID
 #include "simulator/sim_android.h"
@@ -47,6 +49,70 @@ void EnsurePages();
 
 void SaveConfig() {
   SIM_Config_SaveConfigFile(SIM_GetConfigPtr());
+}
+
+// Texture packs (simulator/sim_texture_packs.h)
+std::string sTexturesStatus;
+bool sTexturesError = false;
+
+void TexturePackImported(const char *path, void *) {
+  if (path == nullptr) {
+    sTexturesStatus = "";
+    return;
+  }
+  SIM_TexturePacks_Reload();
+  char text[160];
+  snprintf(text, sizeof(text), "Added. The packs have %d textures now.", SIM_TexturePacks_Count());
+  sTexturesStatus = text;
+  sTexturesError = false;
+}
+
+void DrawTextures() {
+  SIM_config_type *config = SIM_GetConfigPtr();
+  Section("Texture packs");
+  bool packs = config->texturePacks != 0;
+  char help[640];
+  snprintf(help, sizeof(help), "PNGs in a pack replace the game's 3D textures (the overworld, people, battles) by "
+           "name, at any size: HD textures and fixes. Packs go in %s.", SIM_TexturePacks_LoadDir());
+  if (Toggle("Use texture packs", help, &packs)) {
+    config->texturePacks = packs ? 1 : 0;
+    SIM_TexturePacks_Reload();
+    SaveConfig();
+  }
+  const bool busy = SIM_Files_IsBusy() != FALSE;
+  int pressed = ButtonPair("Add a pack", "Look again", false, !busy, !busy);
+  if (pressed == 1) {
+    sTexturesStatus.clear();
+    SIM_Files_ImportFolder("Choose the texture pack's folder", ".png", SIM_TexturePacks_LoadDir(),
+                           TexturePackImported, nullptr);
+  } else if (pressed == 2) {
+    SIM_TexturePacks_Reload();
+    char text[96];
+    snprintf(text, sizeof(text), "The packs have %d textures.", SIM_TexturePacks_Count());
+    sTexturesStatus = text;
+    sTexturesError = false;
+  }
+  if (packs) {
+    char text[96];
+    snprintf(text, sizeof(text), "%d textures in the packs, %d of them in use so far.", SIM_TexturePacks_Count(),
+             SIM_TexturePacks_InUseCount());
+    Note(text);
+  }
+  Status(sTexturesStatus.c_str(), sTexturesError);
+
+  bool dump = config->dumpTextures != 0;
+  snprintf(help, sizeof(help), "Each 3D texture is saved as a PNG the first time it's drawn, in %s. Edit them and put "
+           "them in a pack to replace them.", SIM_TexturePacks_DumpDir());
+  if (Toggle("Save the game's textures", help, &dump)) {
+    config->dumpTextures = dump ? 1 : 0;
+    SIM_TexturePacks_Reload(); // the textures already made are saved too
+    SaveConfig();
+  }
+  if (dump) {
+    char text[64];
+    snprintf(text, sizeof(text), "%d saved so far.", SIM_TexturePacks_DumpedCount());
+    Note(text);
+  }
 }
 
 void DrawDisplay() {
@@ -122,6 +188,8 @@ void DrawDisplay() {
     SaveConfig();
   }
 #endif
+
+  DrawTextures();
 
   Section("Frame timing");
   static const char *const kVsync[] = { "Off", "On", "Half rate" };

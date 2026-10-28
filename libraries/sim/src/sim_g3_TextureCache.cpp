@@ -24,6 +24,10 @@ std::shared_ptr<Texture> TextureCache::GetTexture(u32 textureCRC, u32 paletteCRC
     return nullptr;
 }
 
+void TextureCache::Clear() {
+    mTextureMap.clear();
+}
+
 u64 TextureCache::GetCombinedCRC(u32 textureCRC, u32 paletteCRC) {
     return (((u64)(textureCRC)) | (((u64)paletteCRC)) << 32);
 }

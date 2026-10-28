@@ -27,6 +27,13 @@ void SIM_Files_PickToOpen(const char *title, const char *filters, SIM_FileOpened
 // are listed in .skipped there. On desktop the folder's own path. NULL if cancelled.
 void SIM_Files_PickFolder(const char *title, const char *gameCode, SIM_FileOpenedFn done, void *user);
 
+// Lets the player pick a folder whose files with one of the extensions (".png,.dds"), from
+// it and every folder in it, are copied into targetDir/NAME (NAME: the picked folder's),
+// keeping its folders. done gets targetDir/NAME, or NULL if the player cancelled or
+// nothing could be copied.
+void SIM_Files_ImportFolder(const char *title, const char *extensions, const char *targetDir, SIM_FileOpenedFn done,
+                            void *user);
+
 // Lets the player choose where to save a copy of sourcePath
 void SIM_Files_SaveCopy(const char *title, const char *sourcePath, const char *suggestedName,
                         SIM_FileSavedFn done, void *user);
