@@ -9,10 +9,17 @@
 #include <string>
 #include <system_error>
 
+#include <cstdlib>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 #ifdef SDK_BUILD_ANDROID
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_system.h>
 #include <jni.h>
+#include <strings.h>
+#include <sys/system_properties.h>
 #else
 #include "ImGuiFileDialog.h"
 #include "simulator/imgui/imgui.hpp"
@@ -20,7 +27,7 @@
 
 namespace {
 
-enum class Kind { NONE, OPEN, FOLDER, IMPORT, SAVE };
+enum class Kind { NONE, OPEN, FOLDER, IMPORT, FOLDER_PATH, SAVE };
 
 Kind sKind = Kind::NONE;
 SIM_FileOpenedFn sOpenedFn = nullptr;
@@ -41,7 +48,8 @@ void Finish(const char *openedPath, bool saved) {
   sSavedFn = nullptr;
   sUser = nullptr;
 
-  if ((kind == Kind::OPEN || kind == Kind::FOLDER || kind == Kind::IMPORT) && openedFn != nullptr) {
+  if ((kind == Kind::OPEN || kind == Kind::FOLDER || kind == Kind::IMPORT || kind == Kind::FOLDER_PATH) &&
+      openedFn != nullptr) {
     openedFn(openedPath, user);
   } else if (kind == Kind::SAVE && savedFn != nullptr) {
     savedFn(saved ? TRUE : FALSE, user);
@@ -80,6 +88,24 @@ bool CallActivity(const char *name, const char *signature, jstring arg1, jstring
   env->DeleteLocalRef(activityClass);
   env->DeleteLocalRef(activity);
   return ok;
+}
+
+bool CallActivityBool(const char *name) {
+  JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+  jobject activity = (jobject)SDL_AndroidGetActivity();
+  if (env == nullptr || activity == nullptr) {
+    return false;
+  }
+  jclass activityClass = env->GetObjectClass(activity);
+  jmethodID method = env->GetMethodID(activityClass, name, "()Z");
+  bool result = false;
+  if (method != nullptr) {
+    result = env->CallBooleanMethod(activity, method) != JNI_FALSE;
+  }
+  env->ExceptionClear();
+  env->DeleteLocalRef(activityClass);
+  env->DeleteLocalRef(activity);
+  return result;
 }
 
 #else
@@ -187,6 +213,70 @@ extern "C" void SIM_Files_ImportFolder(const char *title, const char *extensions
   config.path = ".";
   ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, title, nullptr, config);
 #endif
+}
+
+extern "C" void SIM_Files_PickFolderPath(const char *title, SIM_FileOpenedFn done, void *user) {
+  if (sKind != Kind::NONE) {
+    if (done != nullptr) {
+      done(nullptr, user);
+    }
+    return;
+  }
+  sKind = Kind::FOLDER_PATH;
+  sOpenedFn = done;
+  sUser = user;
+
+#ifdef SDK_BUILD_ANDROID
+  (void)title;
+  sResult = RESULT_NONE;
+  if (!CallActivity("pickFolderPath", "()V", nullptr, nullptr)) {
+    Finish(nullptr, false);
+  }
+#else
+  IGFD::FileDialogConfig config;
+  config.path = ".";
+  ImGuiFileDialog::Instance()->OpenDialog(kDialogKey, title, nullptr, config);
+#endif
+}
+
+extern "C" BOOL SIM_Files_HasStorageAccess(void) {
+#ifdef SDK_BUILD_ANDROID
+  return CallActivityBool("hasAllFilesAccess") ? TRUE : FALSE;
+#else
+  return TRUE;
+#endif
+}
+
+extern "C" void SIM_Files_RequestStorageAccess(void) {
+#ifdef SDK_BUILD_ANDROID
+  CallActivity("requestAllFilesAccess", "()V", nullptr, nullptr);
+#endif
+}
+
+extern "C" const char *SIM_DeviceName(void) {
+  static char name[64];
+  if (name[0] != '\0') {
+    return name;
+  }
+#ifdef SDK_BUILD_ANDROID
+  char maker[PROP_VALUE_MAX] = "";
+  char model[PROP_VALUE_MAX] = "";
+  __system_property_get("ro.product.manufacturer", maker);
+  __system_property_get("ro.product.model", model);
+  if (model[0] != '\0' && maker[0] != '\0' && strncasecmp(model, maker, strlen(maker)) != 0) {
+    snprintf(name, sizeof(name), "%s %s", maker, model);
+  } else {
+    snprintf(name, sizeof(name), "%s", model[0] != '\0' ? model : "Android");
+  }
+#elif defined(_WIN32)
+  const char *computer = getenv("COMPUTERNAME");
+  snprintf(name, sizeof(name), "%s", computer != nullptr ? computer : "PC");
+#else
+  if (gethostname(name, sizeof(name) - 1) != 0 || name[0] == '\0') {
+    snprintf(name, sizeof(name), "PC");
+  }
+#endif
+  return name;
 }
 
 extern "C" void SIM_Files_SaveCopy(const char *title, const char *sourcePath, const char *suggestedName,
@@ -316,12 +406,12 @@ extern "C" void SIM_Files_Update(void) {
   if (ImGuiFileDialog::Instance()->Display(kDialogKey, ImGuiWindowFlags_NoCollapse, minSize)) {
     bool accepted = ImGuiFileDialog::Instance()->IsOk();
     std::string chosen = accepted ? ImGuiFileDialog::Instance()->GetFilePathName() : std::string();
-    if (accepted && (sKind == Kind::FOLDER || sKind == Kind::IMPORT) && chosen.empty()) {
+    if (accepted && (sKind == Kind::FOLDER || sKind == Kind::IMPORT || sKind == Kind::FOLDER_PATH) && chosen.empty()) {
       chosen = ImGuiFileDialog::Instance()->GetCurrentPath();
     }
     ImGuiFileDialog::Instance()->Close();
 
-    if (sKind == Kind::OPEN || sKind == Kind::FOLDER) {
+    if (sKind == Kind::OPEN || sKind == Kind::FOLDER || sKind == Kind::FOLDER_PATH) {
       Finish(accepted ? chosen.c_str() : nullptr, accepted);
     } else if (sKind == Kind::IMPORT) {
       std::string folder = accepted ? ImportFolder(chosen) : std::string();

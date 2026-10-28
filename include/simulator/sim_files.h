@@ -34,6 +34,20 @@ void SIM_Files_PickFolder(const char *title, const char *gameCode, SIM_FileOpene
 void SIM_Files_ImportFolder(const char *title, const char *extensions, const char *targetDir, SIM_FileOpenedFn done,
                             void *user);
 
+// Lets the player pick a folder to use where it is (a folder another app syncs, say),
+// passing its path. On Android the system folder picker is used and its choice turned
+// into a path, which can be read and written with SIM_Files_HasStorageAccess(). NULL if
+// cancelled (or, on Android, a folder that isn't on the device's storage).
+void SIM_Files_PickFolderPath(const char *title, SIM_FileOpenedFn done, void *user);
+
+// Android: whether the app may use files anywhere on the device's storage ("All files
+// access"), and asking for it (the system's settings screen for it opens). Desktop: always.
+BOOL SIM_Files_HasStorageAccess(void);
+void SIM_Files_RequestStorageAccess(void);
+
+// A name for this device ("AYN Thor", the computer's name)
+const char *SIM_DeviceName(void);
+
 // Lets the player choose where to save a copy of sourcePath
 void SIM_Files_SaveCopy(const char *title, const char *sourcePath, const char *suggestedName,
                         SIM_FileSavedFn done, void *user);
