@@ -26,6 +26,22 @@ extern "C" void __attribute__((weak)) SIM_Prj_CartName(const char *dir, char *na
   snprintf(name, nameSize, "Pokemon");
 }
 
+extern "C" int __attribute__((weak)) SIM_Prj_RandomizerOptions(const SIM_RandomizerOption **options) {
+  *options = nullptr;
+  return 0;
+}
+
+extern "C" BOOL __attribute__((weak)) SIM_Prj_Randomize(const char *dir, u32 seed, u32 options, char *summary,
+                                                        int summarySize, char *error, int errorSize) {
+  (void)dir;
+  (void)seed;
+  (void)options;
+  (void)summary;
+  (void)summarySize;
+  snprintf(error, errorSize, "This game has no randomizer.");
+  return FALSE;
+}
+
 namespace SIM::Carts {
 
 namespace {

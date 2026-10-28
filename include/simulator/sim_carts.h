@@ -30,6 +30,24 @@ typedef struct SIM_Cart {
 // Game hook (weak default "Pokemon"): a display name for the ROM extracted in dir
 void SIM_Prj_CartName(const char *dir, char *name, int nameSize);
 
+// Game hooks for a randomizer on the "Add a game" screen (weak defaults: none, and the
+// screen doesn't offer one). Its options are toggles there, with a seed.
+typedef struct SIM_RandomizerOption {
+    const char *label;
+    const char *help;
+    BOOL defaultOn;
+} SIM_RandomizerOption;
+
+// The options; returns how many (0: no randomizer)
+int SIM_Prj_RandomizerOptions(const SIM_RandomizerOption **options);
+
+// Randomizes the game just extracted in dir, from seed, with option i on when bit i of
+// options is set. Runs on a worker thread: it may only use the files in dir (not the
+// running game's). summary receives a short description for the game's info line
+// ("Randomized: wild Pokemon, trainers"); error the reason when it returns FALSE.
+BOOL SIM_Prj_Randomize(const char *dir, u32 seed, u32 options, char *summary, int summarySize, char *error,
+                       int errorSize);
+
 // Settings file in the data directory, whichever game is running
 const char *SIM_SettingsPath(const char *fileName);
 

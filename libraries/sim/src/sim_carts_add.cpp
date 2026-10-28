@@ -18,11 +18,13 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -558,6 +560,37 @@ struct Built {
   std::string info;
 };
 
+// What the randomizer is to do with the new game (the game's SIM_Prj_Randomize)
+struct Randomize {
+  bool on = false;
+  u32 seed = 0;
+  u32 options = 0;
+};
+
+// Worker: randomizes the game just extracted (built.id); on failure it is removed again
+void RandomizeBuilt(const Randomize &randomize, Built &built) {
+  if (!built.ok || !randomize.on) {
+    return;
+  }
+  SetStep("Randomizing...", -1.0f);
+  char summary[96] = "";
+  char error[160] = "";
+  const std::string dir = CartDir(built.id);
+  if (!SIM_Prj_Randomize(dir.c_str(), randomize.seed, randomize.options, summary, sizeof(summary), error,
+                         sizeof(error))) {
+    std::error_code ignored;
+    fs::remove_all(dir, ignored);
+    built.ok = false;
+    built.id.clear();
+    built.error = error[0] != '\0' ? error : "The game could not be randomized.";
+    return;
+  }
+  if (summary[0] != '\0') {
+    built.info += (built.info.empty() ? "" : " + ") + std::string(summary);
+    WriteWholeFile(dir + "/cart.info", (const u8 *)built.info.data(), built.info.size());
+  }
+}
+
 // Worker: extracts rom (patched or not) as a new game
 void Extract(const std::vector<u8> *patched, const std::string &romPath, const std::string &info, Built &built) {
   std::string path = romPath;
@@ -721,6 +754,11 @@ bool sScanning = false;
 std::string sRom;            // files mode
 std::vector<Patch> sChain;   // files mode
 
+// The randomizer (when the game has one): off unless turned on for this game
+bool sRandomize = false;
+int sSeed = 0;
+std::vector<bool> sRandomOptions;
+
 std::string sMessage;
 bool sFailed = false;
 std::string sAddedId;
@@ -850,12 +888,26 @@ void Added(const Built &built) {
   }
 }
 
+Randomize CurrentRandomize() {
+  Randomize randomize;
+  randomize.on = sRandomize;
+  randomize.seed = (u32)sSeed;
+  for (size_t i = 0; i < sRandomOptions.size() && i < 32; i++) {
+    if (sRandomOptions[i]) {
+      randomize.options |= 1u << i;
+    }
+  }
+  return randomize;
+}
+
 void StartBuild(const std::function<void(Built &)> &work) {
   sMessage.clear();
   sFailed = false;
-  StartJob([work] {
+  const Randomize randomize = CurrentRandomize();
+  StartJob([work, randomize] {
     auto built = std::make_shared<Built>();
     work(*built);
+    RandomizeBuilt(randomize, *built);
     sJob.finish = [built] { Added(*built); };
   });
 }
@@ -934,6 +986,47 @@ void DrawAdded() {
   }
 }
 
+int NewSeed() {
+  static std::mt19937 generator((unsigned)std::random_device{}() ^ (unsigned)time(nullptr));
+  return 1 + (int)(generator() % 99999999u);
+}
+
+// The randomizer's options for the game being added (when the game has a randomizer)
+void DrawRandomizer() {
+  const SIM_RandomizerOption *options = nullptr;
+  const int count = SIM_Prj_RandomizerOptions(&options);
+  if (count <= 0 || options == nullptr) {
+    return;
+  }
+  if ((int)sRandomOptions.size() != count) {
+    sRandomOptions.assign(count, false);
+    for (int i = 0; i < count; i++) {
+      sRandomOptions[i] = options[i].defaultOn != FALSE;
+    }
+  }
+  if (sSeed <= 0) {
+    sSeed = NewSeed();
+  }
+  Section("Randomizer");
+  Toggle("Randomize it", "A new adventure: different Pokemon to meet, battle and choose from. The same seed and options "
+                         "give the same game, on any device.", &sRandomize);
+  if (!sRandomize) {
+    return;
+  }
+  NumberField("Seed", "Share it to play the same randomized game as a friend.", &sSeed, 1, 99999999);
+  if (Button("New seed")) {
+    sSeed = NewSeed();
+  }
+  for (int i = 0; i < count; i++) {
+    ImGui::PushID(1000 + i);
+    bool on = sRandomOptions[i];
+    if (Toggle(options[i].label, options[i].help, &on)) {
+      sRandomOptions[i] = on;
+    }
+    ImGui::PopID();
+  }
+}
+
 void DrawMenu() {
   Note("Add another game next to the ones you have, like Drayano's Renegade Platinum. Each game keeps its own saves.");
   if (Button(PickerLabel("Choose a folder"),
@@ -951,6 +1044,12 @@ void DrawMenu() {
   Note("Unzip the download from Drayano's page, put your ROM in the same folder (or choose it after the folder), and "
        "choose the folder. RenegadePlatinum4997 (3541 for early ROMs) goes on the ROM; Classic and the shiny rate "
        "patches show up as extras.");
+  const SIM_RandomizerOption *options = nullptr;
+  if (SIM_Prj_RandomizerOptions(&options) > 0) {
+    Section("Randomizer");
+    Note("Any game can be randomized as it's added, Renegade Platinum too: once the ROM (and patches) are chosen, turn "
+         "on \"Randomize it\" and pick a seed.");
+  }
 }
 
 void DrawFolder() {
@@ -1076,6 +1175,10 @@ void DrawFolder() {
     }
   }
 
+  if (!plan.roms.empty() && plan.error.empty()) {
+    DrawRandomizer();
+  }
+
   Space(4.0f);
   if (!sMessage.empty()) {
     Status(sMessage.c_str(), sFailed);
@@ -1085,7 +1188,7 @@ void DrawFolder() {
                                                                             plan.bases[plan.base].groups.end(),
                                                                             [](const Group &g) { return g.selected > 0; }));
   if (!plan.roms.empty()) {
-    if (Button(patching ? "Patch and add" : "Add the game", nullptr, true, ready)) {
+    if (Button(sRandomize ? "Randomize and add" : patching ? "Patch and add" : "Add the game", nullptr, true, ready)) {
       StartFolderBuild();
     }
     if (ready) {
@@ -1127,11 +1230,14 @@ void DrawFiles() {
   Note("Renegade Platinum: your Platinum (USA) ROM, then RenegadePlatinum4997.xdelta (3541 for early ROMs), then "
        "ClassicVersion.xdelta for Classic.");
 
+  DrawRandomizer();
+
   Space(4.0f);
   if (!sMessage.empty()) {
     Status(sMessage.c_str(), sFailed);
   }
-  if (Button(sChain.empty() ? "Add the game" : "Patch and add", nullptr, true, !sRom.empty())) {
+  if (Button(sRandomize ? "Randomize and add" : sChain.empty() ? "Add the game" : "Patch and add", nullptr, true,
+             !sRom.empty())) {
     StartFilesBuild();
   }
 }
@@ -1153,6 +1259,9 @@ void OpenAdd(void (*done)(BOOL ok, const char *id)) {
   sFailed = false;
   sAddedId.clear();
   sDone = done;
+  sRandomize = false;
+  sSeed = 0;
+  sRandomOptions.clear();
 }
 
 void AddBack() {
