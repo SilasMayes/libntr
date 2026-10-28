@@ -30,6 +30,11 @@ BOOL SIM_Prj_CompanionEnabled(void);
 void SIM_Prj_CompanionSetup(float outputWidth); // once, with the companion's ImGui context current
 void SIM_Prj_CompanionDraw(const SIM_CompanionFrame *frame);
 
+// Pictures for the companion's (or the settings') ImGui drawing: an RGBA8 image (rows top
+// to bottom, sharp pixels when scaled) as an ImTextureID. Call while drawing the UI.
+unsigned int SIM_UI_CreateImage(int width, int height, const void *rgba);
+void SIM_UI_DeleteImage(unsigned int image);
+
 void SIM_Companion_SetFullScreen(BOOL fullScreen);
 BOOL SIM_Companion_IsFullScreen(void);
 void SIM_Companion_ToggleFullScreen(void);

@@ -26,6 +26,32 @@ constexpr float kMinCompanionShare = 0.15f;
 
 } // namespace
 
+extern "C" unsigned int SIM_UI_CreateImage(int width, int height, const void *rgba) {
+  if (width <= 0 || height <= 0 || rgba == nullptr) {
+    return 0;
+  }
+  GLint previous = 0;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous);
+  GLuint texture = 0;
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)previous);
+  return texture;
+}
+
+extern "C" void SIM_UI_DeleteImage(unsigned int image) {
+  if (image != 0) {
+    GLuint texture = image;
+    glDeleteTextures(1, &texture);
+  }
+}
+
 extern "C" void SIM_Companion_SetFullScreen(BOOL fullScreen) {
   sFullScreen = fullScreen ? true : false;
 }
