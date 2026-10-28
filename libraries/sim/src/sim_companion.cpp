@@ -19,6 +19,8 @@ bool sFullScreen = false;
 std::vector<SIM_TouchEvent> sPendingTouches;
 bool sReleaseHover = false;
 Uint64 sLastFrameTicks = 0;
+bool sDsViewSet = false;
+SIM_CompanionDsView sDsView = {};
 
 // Below this share of the output height the companion strip would be too cramped to be
 // useful; the companion is then only shown full screen.
@@ -50,6 +52,29 @@ extern "C" void SIM_UI_DeleteImage(unsigned int image) {
     GLuint texture = image;
     glDeleteTextures(1, &texture);
   }
+}
+
+extern "C" void SIM_Companion_ShowDsScreen(float x, float y, float width, float height, int dsX, int dsY, int dsWidth,
+                                           int dsHeight) {
+  if (width < 1.0f || height < 1.0f || dsWidth <= 0 || dsHeight <= 0) {
+    return;
+  }
+  sDsView.x = (int)(x + 0.5f);
+  sDsView.y = (int)(y + 0.5f);
+  sDsView.width = (int)(width + 0.5f);
+  sDsView.height = (int)(height + 0.5f);
+  sDsView.dsX = dsX;
+  sDsView.dsY = dsY;
+  sDsView.dsWidth = dsWidth;
+  sDsView.dsHeight = dsHeight;
+  sDsViewSet = true;
+}
+
+extern "C" BOOL SIM_Companion_DsView(SIM_CompanionDsView *out) {
+  if (sDsViewSet && out != nullptr) {
+    *out = sDsView;
+  }
+  return sDsViewSet ? TRUE : FALSE;
 }
 
 extern "C" void SIM_Companion_SetFullScreen(BOOL fullScreen) {
@@ -123,6 +148,7 @@ extern "C" void SIM_Companion_QueueTouch(int type, int x, int y) {
 }
 
 extern "C" void SIM_Companion_Render(const SIM_CompanionLayout *layout) {
+  sDsViewSet = false;
   if (!layout->companionVisible) {
     sPendingTouches.clear();
     return;

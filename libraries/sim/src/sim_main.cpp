@@ -543,6 +543,8 @@ static SingleScreenQuad s_SingleScreenQuad = SINGLE_SCREEN_NONE;
 
 // Touch panel rectangle on the secondary output, in its drawable's pixels
 static int s_SecondaryTouchRect[4] = {};
+// The DS screen region the touch rect shows (all of it, unless the companion embeds a part)
+static int s_SecondaryTouchSrc[4] = {0, 0, SIM_NDS_SCREEN_WIDTH, SIM_NDS_SCREEN_HEIGHT};
 
 // Who owns the finger currently down on the secondary output: the DS touch screen or
 // the companion UI next to it (decided where the touch starts)
@@ -943,8 +945,10 @@ void *SIM_RenderInit(void *arg) {
   glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  // Clamped: the screen's edges must not blend in the opposite edge (or, with widescreen,
+  // the unused part of the framebuffer)
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                          g3RenderTextureId, 0);
   glGenRenderbuffers(1, &g3RenderBufferId);
@@ -1847,9 +1851,9 @@ void *SIM_Render(void *arg) {
         touchY = touchY < s_SecondaryTouchRect[1] ? s_SecondaryTouchRect[1] : touchY;
         touchY = touchY > s_SecondaryTouchRect[3] - 1 ? s_SecondaryTouchRect[3] - 1 : touchY;
         s_tpData.x = (u16)map(touchX, s_SecondaryTouchRect[0],
-                              s_SecondaryTouchRect[2], 0, SIM_NDS_SCREEN_WIDTH);
+                              s_SecondaryTouchRect[2], s_SecondaryTouchSrc[0], s_SecondaryTouchSrc[2]);
         s_tpData.y = (u16)map(touchY, s_SecondaryTouchRect[1],
-                              s_SecondaryTouchRect[3], 0, SIM_NDS_SCREEN_HEIGHT);
+                              s_SecondaryTouchRect[3], s_SecondaryTouchSrc[1], s_SecondaryTouchSrc[3]);
         s_tpData.validity = 0;
         s_tpData.touch = 1;
       } else if (!bottomOnSecondary && isMouseDown) {
@@ -1932,6 +1936,10 @@ void *SIM_Render(void *arg) {
           s_SecondaryTouchRect[1] = layout.dsY;
           s_SecondaryTouchRect[2] = layout.dsX + layout.dsWidth;
           s_SecondaryTouchRect[3] = layout.dsY + layout.dsHeight;
+          s_SecondaryTouchSrc[0] = 0;
+          s_SecondaryTouchSrc[1] = 0;
+          s_SecondaryTouchSrc[2] = SIM_NDS_SCREEN_WIDTH;
+          s_SecondaryTouchSrc[3] = SIM_NDS_SCREEN_HEIGHT;
 
           s_SingleScreenQuad = swapped ? SINGLE_SCREEN_TOP : SINGLE_SCREEN_BOTTOM;
           DrawEngine(swapped ? topIsSub : !topIsSub);
@@ -1944,6 +1952,35 @@ void *SIM_Render(void *arg) {
         const u64 companionStart = SIM_NowNs();
         SIM_Companion_Render(&layout);
         companionNs = SIM_NowNs() - companionStart;
+
+        // Part of the DS touch screen shown inside the companion (a Pokétch tab, say): drawn
+        // over it, scaled so the region fills the rectangle, and it takes the touches
+        SIM_CompanionDsView view;
+        if (!swapped && SIM_Companion_DsView(&view)) {
+          const float sx = (float)view.width / (float)view.dsWidth;
+          const float sy = (float)view.height / (float)view.dsHeight;
+          const int vx = (int)((float)view.x - (float)view.dsX * sx);
+          const int vyTop = (int)((float)view.y - (float)view.dsY * sy);
+          const int vw = (int)((float)SIM_NDS_SCREEN_WIDTH * sx + 0.5f);
+          const int vh = (int)((float)SIM_NDS_SCREEN_HEIGHT * sy + 0.5f);
+          glUseProgram(g2shaderProgramID);
+          glBindVertexArray(g2vertexArray);
+          glEnable(GL_SCISSOR_TEST);
+          glScissor(view.x, secondaryHeight - (view.y + view.height), view.width, view.height);
+          glViewport(vx, secondaryHeight - (vyTop + vh), vw, vh);
+          s_SingleScreenQuad = SINGLE_SCREEN_BOTTOM;
+          DrawEngine(!topIsSub);
+          glDisable(GL_SCISSOR_TEST);
+
+          s_SecondaryTouchRect[0] = view.x;
+          s_SecondaryTouchRect[1] = view.y;
+          s_SecondaryTouchRect[2] = view.x + view.width;
+          s_SecondaryTouchRect[3] = view.y + view.height;
+          s_SecondaryTouchSrc[0] = view.dsX;
+          s_SecondaryTouchSrc[1] = view.dsY;
+          s_SecondaryTouchSrc[2] = view.dsX + view.dsWidth;
+          s_SecondaryTouchSrc[3] = view.dsY + view.dsHeight;
+        }
         GpuTimerEnd();
         const u64 endStart = SIM_NowNs();
         SIM_Display_EndSecondary();
