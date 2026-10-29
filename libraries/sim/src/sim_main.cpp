@@ -1492,10 +1492,6 @@ void *SIM_Render(void *arg) {
     }
     sSkipNextFrame = false;
     sVBlanksThisSecond++;
-    // SIM_Net_Process();
-    if ((*((u32 *)HW_VBLANK_COUNT_BUF) % 10) == 0) {
-      SIM_Net_SendBeaconIndication();
-    }
 
     // Unbind 3D Framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2058,6 +2054,13 @@ void *SIM_Render(void *arg) {
     s_HW_INTR_CHECK_BUF |= 1;
     *((u32 *)HW_VBLANK_COUNT_BUF) = *((u32 *)HW_VBLANK_COUNT_BUF) + 1;
 
+    // The game's frame is done: the wireless callbacks it waits for run from here until
+    // the next frame starts (see SIM_GameLock_Engage)
+    SIM_GameLock_Release();
+    if ((*((u32 *)HW_VBLANK_COUNT_BUF) % 10) == 0) {
+      SIM_Net_SendBeaconIndication();
+    }
+
     if (present) {
       const u64 guiStart = SIM_NowNs();
       SIM::GUI::Render();
@@ -2162,6 +2165,7 @@ void *SIM_Render(void *arg) {
     s_numG3CommandsThisFrame = 0;
     s_curPolygonAttr.alpha = 1.0f;
 
+    SIM_GameLock_Reacquire();
   } while (SIM::GUI::IsGameLogicPaused());
   // Bind 3D Framebuffer & Renderbuffer
   glBindFramebuffer(GL_FRAMEBUFFER, g3FrameBuffer);
@@ -2423,6 +2427,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  SIM_GameLock_Engage();
   NitroMain();
   return 0;
 }

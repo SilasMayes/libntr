@@ -25,6 +25,8 @@ extern PXIFifoCallback FifoRecvCallbackTable7[PXI_MAX_FIFO_TAG];
 
 static SDL_sem * pxiSemaphore;
 static SDL_sem * pxi7to9Semaphore;
+static SDL_mutex * sGameLock;
+static BOOL sGameLockEngaged = FALSE;
 static SDL_sem * osThreadSemaphore;
 
 void SIM_pxiInit(void)
@@ -52,6 +54,35 @@ void SIM_pxiInit(void)
 
 	pxiSemaphore = SDL_CreateSemaphore(0);
 	pxi7to9Semaphore = SDL_CreateSemaphore(0);
+	sGameLock = SDL_CreateMutex();
+}
+
+void SIM_GameLock_Engage(void)
+{
+	if (!sGameLockEngaged) {
+		SDL_LockMutex(sGameLock);
+		sGameLockEngaged = TRUE;
+	}
+}
+
+void SIM_GameLock_Release(void)
+{
+	if (sGameLockEngaged) {
+		SDL_UnlockMutex(sGameLock);
+	}
+}
+
+void SIM_GameLock_Reacquire(void)
+{
+	if (sGameLockEngaged) {
+		SDL_LockMutex(sGameLock);
+	}
+}
+
+// Callbacks into the game's wireless code wait for the game lock (see sim.h)
+static BOOL IsWirelessTag(u32 tag)
+{
+	return tag == PXI_FIFO_TAG_WM || tag == PXI_FIFO_TAG_WVR;
 }
 
 void SIM_procPXI(void)
@@ -368,7 +399,14 @@ void SIM_procPXI7to9(void)
 
 		if( myCallback != NULL )
 		{
+			BOOL locked = IsWirelessTag(msg->e.tag);
+			if (locked) {
+				SDL_LockMutex(sGameLock);
+			}
 			myCallback(msg->e.tag, msg->e.data, msg->e.err);
+			if (locked) {
+				SDL_UnlockMutex(sGameLock);
+			}
 		}
 
 		free( data );

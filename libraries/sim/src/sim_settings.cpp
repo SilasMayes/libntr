@@ -24,6 +24,9 @@ void __attribute__((weak)) SIM_Prj_SettingsPages() {
 
 namespace SIM::Settings {
 
+void AddLinkPlayPage(); // sim_settings_link.cpp
+void LinkPlayClosed();
+
 namespace {
 
 using namespace SIM::UI;
@@ -413,6 +416,7 @@ void EnsurePages() {
   AddPage("Sound", "Volume", DrawSound, 50);
   AddPage("Controls", "Buttons and keys, fast-forward", DrawControls, 60);
   AddPage("Advanced", "Performance, developer windows", DrawAdvanced, 90);
+  AddLinkPlayPage();
   SIM_Prj_SettingsPages();
   SortPages();
 }
@@ -453,6 +457,7 @@ void Open(const char *page) {
 void Close() {
   sOpen = false;
   sCaptureTarget = nullptr;
+  LinkPlayClosed();
 }
 
 bool IsOpen() {

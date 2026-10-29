@@ -64,6 +64,13 @@ void SIM_PostPxi7to9Thread();
 int SIM_procOSThreadThread( void * arg );
 void SIM_procThread(void);
 void SIM_pxiInit(void);
+// The game lock: the game's own code runs holding it (taken before NitroMain), and the
+// wireless callbacks the ARM7 side sends (WM, WVR) only run while it's free, which is
+// while the game waits for the next frame. On the DS those callbacks are interrupts, so
+// they never run in the middle of the game's code; here they come from another thread.
+void SIM_GameLock_Engage(void);
+void SIM_GameLock_Release(void);
+void SIM_GameLock_Reacquire(void);
 void * SIM_Render(void *arg);
 void * SIM_RenderInit(void * arg);
 void SIM_SetInternalResolution(int internalRes);

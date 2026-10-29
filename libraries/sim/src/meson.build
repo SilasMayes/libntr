@@ -41,6 +41,7 @@ libsim_srcs = files(
     'sim_RomExtractor.cpp',
     'sim_screenquads.c',
     'sim_settings.cpp',
+    'sim_settings_link.cpp',
     'sim_ui.cpp',
     'sim_shaders.cpp',
     'sim_texture_packs.cpp',

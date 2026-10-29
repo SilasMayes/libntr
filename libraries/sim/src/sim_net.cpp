@@ -19,6 +19,8 @@
     #include <netinet/in.h>
     #include <sys/select.h>
     #include <sys/socket.h>
+    #include <arpa/inet.h>
+    #include <fcntl.h>
 
     #define socket_t    int
     #define sockaddr_t  struct sockaddr
@@ -34,12 +36,84 @@
 #include "tracy/TracyC.h"
 #endif
 
+#ifdef SDK_BUILD_ANDROID
+#include <SDL2/SDL_system.h>
+#include <jni.h>
+#endif
+
 enum {
     SIM_NET_CHANNEL_MGMT, // Control, commands, etc
     SIM_NET_CHANNEL_APPDATA, // NDS application data
 };
 
 static SIM_Net_t net = {};
+
+// enet isn't thread-safe: the net thread services the host while the game's thread sends
+// (MP data, player info). Everything that touches net.enetHost or its peers holds this
+// (an SDL mutex, which may be locked again by the thread holding it).
+static SDL_mutex *sEnetLock = NULL;
+
+#define ENET_LOCK() SDL_LockMutex(sEnetLock)
+#define ENET_UNLOCK() SDL_UnlockMutex(sEnetLock)
+
+// Joining in the background (SIM_Net_StartClientAsync)
+static SDL_atomic_t sConnecting;
+static char sConnectAddress[64];
+static BOOL sConnectFailed = FALSE;
+static BOOL sHostLost = FALSE;
+static BOOL sJoinRefused = FALSE;
+
+// This device's MP links by AID: the peer that AID's data goes to. Set when a parent takes a
+// child (its AID) and when a child is taken (AID 0, its parent). The player list (which
+// the host rebroadcasts and may be a moment behind) only finds parents to join.
+static ENetPeer * sMPPeer[16];
+
+static void ClearMPLinks(void)
+{
+    memset(sMPPeer, 0, sizeof(sMPPeer));
+}
+
+// The other device went away (closed, out of reach): as a DS losing the link, the
+// wireless code hears that the child left (a parent) or the parent did (a child)
+static void LinkLost(ENetPeer * peer)
+{
+    for(int aid = 0; aid < 16; aid++) {
+        if(sMPPeer[aid] != peer) {
+            continue;
+        }
+        ENET_LOCK();
+        sMPPeer[aid] = NULL;
+        ENET_UNLOCK();
+        if(net.curPlayer.mpState == SIM_NET_MPSTATE_PARENT && aid != 0) {
+            net.aidBitmask &= ~(1 << aid);
+            SIM_WMSP_Indicate_t indicate = {};
+            indicate.cmd = SIM_NET_MPPACKETCMD_DISCONNECT;
+            indicate.aid = aid;
+            WMSP_Indicate(&indicate);
+        } else if(net.curPlayer.mpState == SIM_NET_MPSTATE_CHILD && aid == 0) {
+            net.curPlayer.aid = 0;
+            net.curPlayer.mpState = SIM_NET_MPSTATE_OFF;
+            SIM_WMSP_Indicate_t indicate = {};
+            indicate.cmd = SIM_NET_MPPACKETCMD_DISCONNECT;
+            indicate.aid = 0;
+            WMSP_Indicate(&indicate);
+        }
+    }
+}
+
+static void ProcessMPEvent(ENetEvent * event);
+
+// SIM_NET_LOG=1 in the environment: every MP data packet in the log
+static BOOL LogData(void)
+{
+    static int sLog = -1;
+    if(sLog < 0) {
+        const char * value = getenv("SIM_NET_LOG");
+        sLog = value != NULL && value[0] == '1';
+    }
+    return sLog;
+}
+static void DiscoveryUpdate(void);
 
 static int NetThread(void * arg);
 
@@ -70,6 +144,7 @@ void SIM_Net_Init()
 
     net.playerListMutex = SDL_CreateMutex();
     net.joinReqSemaphore = SDL_CreateSemaphore(0);
+    sEnetLock = SDL_CreateMutex();
 
     net.state = SIM_NET_STATE_DISCONNECTED;
 }
@@ -78,19 +153,39 @@ void SIM_Net_Process()
 {
     #ifndef SDK_BUILD_PROSPERO
     // TODO: add PS5 support for ENet
-    if(net.enetHost == NULL) {
-        return;
-    }
-    
+    DiscoveryUpdate();
+
+    // The lock is only held for enet itself: handling an event may hand data to the
+    // wireless code, which may wait for the game's side, which may be sending
     ENetEvent event;
-    while(enet_host_service(net.enetHost, &event, 0) > 0) {
+    while(TRUE) {
+        ENET_LOCK();
+        int got = net.enetHost != NULL ? enet_host_service(net.enetHost, &event, 0) : 0;
+        SIM_Net_State_t state = net.state;
+        ENET_UNLOCK();
+        if(got <= 0) {
+            break;
+        }
         #ifdef SDK_TRACY_ENABLE
         TracyCZone(ctx, 1);
         #endif
-        if(net.state == SIM_NET_STATE_CLIENT) {
+        if(state == SIM_NET_STATE_CLIENT) {
             ProcessClientEvent(&event);
-        } else if(net.state == SIM_NET_STATE_HOST) {
+        } else if(state == SIM_NET_STATE_HOST) {
             ProcessHostEvent(&event);
+        }
+        if(event.type == ENET_EVENT_TYPE_RECEIVE && event.packet != NULL) {
+            // The wireless code reads received data after this returns (through the PXI
+            // FIFO), so packets are freed a while later: when the ring comes round
+            static ENetPacket * sReceived[256];
+            static unsigned sReceivedNext = 0;
+            ENET_LOCK();
+            if(sReceived[sReceivedNext] != NULL) {
+                enet_packet_destroy(sReceived[sReceivedNext]);
+            }
+            sReceived[sReceivedNext] = event.packet;
+            sReceivedNext = (sReceivedNext + 1) % 256;
+            ENET_UNLOCK();
         }
         #ifdef SDK_TRACY_ENABLE
         TracyCZoneEnd(ctx);
@@ -121,10 +216,13 @@ BOOL SIM_Net_StartHost()
     myAddr.host = ENET_HOST_ANY;
     myAddr.port = SIM_NET_PORT;
 
+    ENET_LOCK();
     net.enetHost = enet_host_create(&myAddr, 16, 2, 0, 0);
     if(net.enetHost == NULL) {
+        ENET_UNLOCK();
         return FALSE;
     }
+    sHostLost = FALSE;
 
     InitMyPlayer();
 
@@ -135,6 +233,7 @@ BOOL SIM_Net_StartHost()
 
     net.playerCount = 1;
     net.state = SIM_NET_STATE_HOST;
+    ENET_UNLOCK();
     return TRUE;
     #endif
 }
@@ -148,21 +247,25 @@ BOOL SIM_Net_StartClient(char * ipAddress)
         return FALSE;
     }
 
-    net.enetHost = enet_host_create(NULL, 16, 2, 0, 0);
-    if(net.enetHost == NULL) {
+    // The handshake runs on a host of its own: net.enetHost (which the net thread
+    // services) is only set once it's done
+    ENetHost * client = enet_host_create(NULL, 16, 2, 0, 0);
+    if(client == NULL) {
         return FALSE;
     }
-    
+
     InitMyPlayer();
 
     ENetAddress myAddr;
-    enet_address_set_host(&myAddr, ipAddress);
+    if(enet_address_set_host(&myAddr, ipAddress) != 0) {
+        enet_host_destroy(client);
+        return FALSE;
+    }
     myAddr.port = SIM_NET_PORT;
 
-    ENetPeer * myPeer = enet_host_connect(net.enetHost, &myAddr, 2, 0);
+    ENetPeer * myPeer = enet_host_connect(client, &myAddr, 2, 0);
     if(myPeer == NULL) {
-        enet_host_destroy(net.enetHost);
-        net.enetHost = NULL;
+        enet_host_destroy(client);
         return FALSE;
     }
 
@@ -180,7 +283,7 @@ BOOL SIM_Net_StartClient(char * ipAddress)
         if(curTick - startTick >= timeoutDuration) {
             break;
         }
-        if(enet_host_service(net.enetHost, &event, 10) > 0) {
+        if(enet_host_service(client, &event, 10) > 0) {
             if (connStatus == 0 && event.type == ENET_EVENT_TYPE_CONNECT)
             {
                 connStatus = 1;
@@ -223,14 +326,17 @@ BOOL SIM_Net_StartClient(char * ipAddress)
 
 
     if(connStatus != 2) {
-        enet_host_destroy(net.enetHost);
-        net.enetHost = NULL;
+        enet_host_destroy(client);
         return FALSE;
     }
 
+    ENET_LOCK();
+    net.enetHost = client;
     net.peerList[0] = myPeer;
     myPeer->data = &net.playerList[0];
+    sHostLost = FALSE;
     net.state = SIM_NET_STATE_CLIENT;
+    ENET_UNLOCK();
     return TRUE;
     #endif
 }
@@ -274,8 +380,23 @@ void SIM_Net_SetGameInfo(int ggid, int tgid, u8 * userGameInfo, int userGameInfo
     SendMyPlayer();
 }
 
+void SIM_Net_SetEntry(BOOL entry)
+{
+    if(net.curPlayer.entryFlag == (entry ? 1 : 0)) {
+        return;
+    }
+    net.curPlayer.entryFlag = entry ? 1 : 0;
+    SendMyPlayer();
+}
+
 void SIM_Net_SetMPState(SIM_Net_MPState_t state)
 {
+    if(state == SIM_NET_MPSTATE_OFF || (state == SIM_NET_MPSTATE_PARENT && net.curPlayer.mpState != SIM_NET_MPSTATE_PARENT)) {
+        ENET_LOCK();
+        ClearMPLinks();
+        net.aidBitmask = 0;
+        ENET_UNLOCK();
+    }
     net.curPlayer.mpState = state;
     SendMyPlayer();
 }
@@ -303,6 +424,14 @@ BOOL SIM_Net_JoinMP(u8 * bssid, u8 * ssid)
         return FALSE;
     }
 
+    // Joining someone else's group: this device isn't a parent any more (its join
+    // response must go to the child side)
+    net.curPlayer.mpState = SIM_NET_MPSTATE_OFF;
+    while(SDL_SemTryWait(net.joinReqSemaphore) == 0) {
+        // a late response to an earlier join
+    }
+    sJoinRefused = FALSE;
+
     // Send the join request
     SIM_Net_JoinReqPacket_t myJoinRequest = {};
     InitPacketHeader(&myJoinRequest.common.header);
@@ -310,15 +439,22 @@ BOOL SIM_Net_JoinMP(u8 * bssid, u8 * ssid)
     myJoinRequest.playerId = net.curPlayer.id;
     memcpy(myJoinRequest.ssid, ssid, WM_SIZE_CHILD_SSID);
 
-    ENetPacket * pkt = enet_packet_create(&myJoinRequest, sizeof(SIM_Net_JoinReqPacket_t), ENET_PACKET_FLAG_RELIABLE);
+    ENET_LOCK();
     if(!net.peerList[idNo]) {
+        ENET_UNLOCK();
         return FALSE;
     }
+    ENetPacket * pkt = enet_packet_create(&myJoinRequest, sizeof(SIM_Net_JoinReqPacket_t), ENET_PACKET_FLAG_RELIABLE);
     enet_peer_send(net.peerList[idNo], SIM_NET_CHANNEL_APPDATA, pkt);
+    ENET_UNLOCK();
 
     //Wait for Join Response
     if(SDL_SemWaitTimeout(net.joinReqSemaphore, 5000) != 0) {
         // Timeout
+        return FALSE;
+    }
+    if(sJoinRefused) {
+        // The parent wasn't taking children (any more): as a DS whose association fails
         return FALSE;
     }
 
@@ -334,53 +470,36 @@ BOOL SIM_Net_DisconnectMP(u16 aidBitmap, u16 * resultBitmap)
     // TODO: Add ENet support for PS5
     return FALSE;
     #else
-    BOOL result = FALSE;
     SIM_Net_DisconnectPacket_t disconnectPacket = {};
     InitPacketHeader(&disconnectPacket.common.header);
     disconnectPacket.common.cmd = SIM_NET_MPPACKETCMD_DISCONNECT;
     disconnectPacket.sendingAid = net.curPlayer.aid;
 
-    ENetPacket * pkt = enet_packet_create(&disconnectPacket, sizeof(SIM_Net_DisconnectPacket_t), ENET_PACKET_FLAG_RELIABLE);
-    
-    for(int i=0; i < SIM_NET_MAX_PLAYERS; i++ ) {
-        if(!(net.playerList[i].status == SIM_NET_PLAYERSTATUS_CLIENT || net.playerList[i].status == SIM_NET_PLAYERSTATUS_HOST)) {
+    BOOL result = FALSE;
+    ENET_LOCK();
+    for(int aid = 0; aid < 16; aid++) {
+        if(!((1 << aid) & aidBitmap) || sMPPeer[aid] == NULL || aid == net.curPlayer.aid) {
             continue;
         }
-
-        if(!(net.playerList[i].mpState == SIM_NET_MPSTATE_PARENT || net.playerList[i].mpState == SIM_NET_MPSTATE_CHILD)) {
-            // Not a parent or child device
-            continue;
-        }
-
-        if(!((1 << net.playerList[i].aid) & aidBitmap)) {
-            // Not target AID
-            continue;
-        }
-
-        if(!net.peerList[i]) {
-            // No peer
-            continue;
-        }
-
+        ENetPacket * pkt = enet_packet_create(&disconnectPacket, sizeof(SIM_Net_DisconnectPacket_t), ENET_PACKET_FLAG_RELIABLE);
+        enet_peer_send(sMPPeer[aid], SIM_NET_CHANNEL_APPDATA, pkt);
+        sMPPeer[aid] = NULL;
         result = TRUE;
-        enet_peer_send(net.peerList[i], SIM_NET_CHANNEL_APPDATA, pkt);
         if(resultBitmap) {
-            *resultBitmap = *resultBitmap | (1 << net.playerList[i].aid);
+            *resultBitmap = *resultBitmap | (1 << aid);
         }
-
         if(net.curPlayer.mpState == SIM_NET_MPSTATE_PARENT) {
-            // Free up the AID slot on the parent. TODO: We might need to free in another spot if for example we have a client disconnect
-            net.aidBitmask &= ~(1 << net.playerList[i].aid);
+            // Free up the AID slot on the parent
+            net.aidBitmask &= ~(1 << aid);
         }
     }
+    ENET_UNLOCK();
 
-    //TODO: Do we need to reset the AID and MP state here? or does a different API do that?
-    if(result) {
-        if(net.curPlayer.mpState == SIM_NET_MPSTATE_CHILD) {
-            net.curPlayer.aid = 0;
-            net.curPlayer.mpState = SIM_NET_MPSTATE_OFF; // Not sure if we actually need to turn this off here. but doing it for good measure
-            SendMyPlayer();
-        }
+    if(result && net.curPlayer.mpState == SIM_NET_MPSTATE_CHILD) {
+        ClearMPLinks();
+        net.curPlayer.aid = 0;
+        net.curPlayer.mpState = SIM_NET_MPSTATE_OFF;
+        SendMyPlayer();
     }
 
     return TRUE;
@@ -402,39 +521,30 @@ BOOL SIM_Net_SendMPData(u16 aidBitmap, u8 port, u8 * data, int dataLen)
     mpDataPacket->dataLen = dataLen;
     mpDataPacket->aid = net.curPlayer.aid;
     memcpy(mpDataPacket->data, data, dataLen);
+    ENET_LOCK();
     ENetPacket * pkt = enet_packet_create(mpDataPacket, mpDataPacketSize, ENET_PACKET_FLAG_RELIABLE);
 
-    printf("[SEND] ");
-    for(int i=0; i < dataLen; i++) {
-        printf("%02x", data[i]);
+    if(LogData()) {
+        printf("[SEND aid=%d bmp=%04x port=%d len=%d] ", net.curPlayer.aid, aidBitmap, port, dataLen);
+        for(int i=0; i < dataLen; i++) {
+            printf("%02x", data[i]);
+        }
+        printf("\n");
     }
-    printf("\n");
 
     int numSent = 0;
 
-    for(int i=0; i < SIM_NET_MAX_PLAYERS; i++) {
-        if(!(net.playerList[i].status == SIM_NET_PLAYERSTATUS_CLIENT || net.playerList[i].status == SIM_NET_PLAYERSTATUS_HOST)) {
+    for(int aid = 0; aid < 16; aid++) {
+        if(!((1 << aid) & aidBitmap) || sMPPeer[aid] == NULL || aid == net.curPlayer.aid) {
             continue;
         }
-
-        if(!(net.playerList[i].mpState == SIM_NET_MPSTATE_PARENT || net.playerList[i].mpState == SIM_NET_MPSTATE_CHILD)) {
-            // Not a parent or child device
-            continue;
-        }
-
-        if(!((1 << net.playerList[i].aid) & aidBitmap)) {
-            // Not target AID
-            continue;
-        }
-
-        if(!net.peerList[i]) {
-            // No peer
-            continue;
-        }
-
-        enet_peer_send(net.peerList[i], SIM_NET_CHANNEL_APPDATA, pkt);
+        enet_peer_send(sMPPeer[aid], SIM_NET_CHANNEL_APPDATA, pkt);
         numSent++;
     }
+    if(numSent == 0) {
+        enet_packet_destroy(pkt);
+    }
+    ENET_UNLOCK();
 
     free(mpDataPacket);
     //return (numSent > 0);
@@ -453,7 +563,7 @@ int SIM_Net_Scan(WMBssDesc * bssDescOut)
                 memcpy(bssDescOut[numParentsFound].bssid, net.playerList[i].ndsMacAddr, 6);
                 bssDescOut[numParentsFound].gameInfo.magicNumber = WM_GAMEINFO_MAGIC_NUMBER;
                 bssDescOut[numParentsFound].gameInfoLength = WM_GAMEINFO_LENGTH_MIN;
-                bssDescOut[numParentsFound].gameInfo.gameNameCount_attribute = WM_ATTR_FLAG_ENTRY;
+                bssDescOut[numParentsFound].gameInfo.gameNameCount_attribute = net.playerList[i].entryFlag ? WM_ATTR_FLAG_ENTRY : 0;
                 bssDescOut[numParentsFound].gameInfo.ggid = net.playerList[i].ggid;
                 bssDescOut[numParentsFound].gameInfo.tgid = net.playerList[i].tgid;
                 if(net.playerList[i].userGameInfoLength > 0) {
@@ -506,6 +616,7 @@ static void SendMyPlayer()
 {
     #ifndef SDK_BUILD_PROSPERO
     //TODO: Add PS5 support for ENet
+    ENET_LOCK();
     if(net.state == SIM_NET_STATE_CLIENT) {
         SIM_Net_PlayerInfoPacket_t playerInfoPacket = {0};
         InitPacketHeader(&playerInfoPacket.common.header);
@@ -522,6 +633,7 @@ static void SendMyPlayer()
         if(peerNo >= 0) {
             enet_peer_send(net.peerList[peerNo], SIM_NET_CHANNEL_MGMT, pkt);
         } else {
+            enet_packet_destroy(pkt);
             printf("Error sending player info: Could not find host!\n");
         }
     } else if(net.state == SIM_NET_STATE_HOST) {
@@ -530,6 +642,7 @@ static void SendMyPlayer()
         SDL_UnlockMutex(net.playerListMutex);
         HostUpdatePlayerList();
     }
+    ENET_UNLOCK();
     #endif
 }
 
@@ -557,7 +670,9 @@ static void ProcessHostEvent(ENetEvent * event)
         case ENET_EVENT_TYPE_CONNECT:
             if(net.playerCount >= SIM_NET_MAX_PLAYERS) {
                 //Lobby is full, block connection
+                ENET_LOCK();
                 enet_peer_disconnect(event->peer, 0);
+                ENET_UNLOCK();
             } else {
                 // Not full, accept connection
                 // Send client init
@@ -575,8 +690,10 @@ static void ProcessHostEvent(ENetEvent * event)
                     clientInitPacket.playerId = idNo;
 
 
+                    ENET_LOCK();
                     ENetPacket * myPacket = enet_packet_create(&clientInitPacket, sizeof(SIM_Net_ClientInitPacket_t), ENET_PACKET_FLAG_RELIABLE);
                     enet_peer_send(event->peer, SIM_NET_CHANNEL_MGMT, myPacket);
+                    ENET_UNLOCK();
 
                     SDL_LockMutex(net.playerListMutex);
 
@@ -595,6 +712,7 @@ static void ProcessHostEvent(ENetEvent * event)
         
         case ENET_EVENT_TYPE_DISCONNECT:
             {
+                LinkLost(event->peer);
                 SIM_Net_Player_t * player = (SIM_Net_Player_t*)event->peer->data;
                 if(player == NULL) {
                     break;
@@ -666,13 +784,10 @@ static void ProcessHostEvent(ENetEvent * event)
                 }
 
                 if(event->channelID == SIM_NET_CHANNEL_APPDATA) {
-                    if(net.curPlayer.mpState == SIM_NET_MPSTATE_PARENT) {
-                        ProcessMPParentEvent(event);
-                    } else {
-                        ProcessMPChildEvent(event);
-                    }
+                    ProcessMPEvent(event);
                 }
             }
+            break;
         case ENET_EVENT_TYPE_NONE:
         default:
             break;
@@ -702,7 +817,9 @@ static void ProcessClientEvent(ENetEvent * event)
                 }
 
                 if(idNo < 0) {
+                    ENET_LOCK();
                     enet_peer_disconnect(event->peer, 0);
+                    ENET_UNLOCK();
                     break;
                 }
 
@@ -712,12 +829,16 @@ static void ProcessClientEvent(ENetEvent * event)
             break;
         case ENET_EVENT_TYPE_DISCONNECT:
             {
+                LinkLost(event->peer);
                 SIM_Net_Player_t * player = (SIM_Net_Player_t*)event->peer->data;
                 if(!player) {
                     break;
                 }
 
                 int idNo = player->id;
+                if(event->peer == net.peerList[0] || player->status == SIM_NET_PLAYERSTATUS_HOST) {
+                    sHostLost = TRUE; // the host stopped or went out of reach
+                }
                 net.peerList[idNo] = NULL;
                 SDL_LockMutex(net.playerListMutex);
                 player->status = SIM_NET_PLAYERSTATUS_DISCONNECTED;
@@ -771,12 +892,7 @@ static void ProcessClientEvent(ENetEvent * event)
                 }
 
                 if(event->channelID == SIM_NET_CHANNEL_APPDATA) {
-                    if(net.curPlayer.mpState == SIM_NET_MPSTATE_PARENT) {
-                        ProcessMPParentEvent(event);
-                    } else {
-                        ProcessMPChildEvent(event);
-                    }
-                    
+                    ProcessMPEvent(event);
                 }
             }
 
@@ -784,6 +900,41 @@ static void ProcessClientEvent(ENetEvent * event)
             break;
         case ENET_EVENT_TYPE_NONE:
         default:
+            break;
+    }
+}
+
+// MP packets go by what they are, not by this device's MP state: a device that was a
+// parent a moment ago and is joining someone else gets its join response here
+static void ProcessMPEvent(ENetEvent * event)
+{
+    if(event->packet->dataLength < sizeof(SIM_Net_MpPacketCommon_t)) {
+        return;
+    }
+    const SIM_Net_MpPacketCommon_t * mpPacketBase = (const SIM_Net_MpPacketCommon_t *)event->packet->data;
+    switch(mpPacketBase->cmd) {
+        case SIM_NET_MPPACKETCMD_JOIN_REQ:
+            ProcessMPParentEvent(event);
+            break;
+        case SIM_NET_MPPACKETCMD_JOIN_RESP:
+            ProcessMPChildEvent(event);
+            break;
+        case SIM_NET_MPPACKETCMD_DISCONNECT:
+            if(event->packet->dataLength >= sizeof(SIM_Net_DisconnectPacket_t)
+               && ((const SIM_Net_DisconnectPacket_t *)mpPacketBase)->sendingAid == 0
+               && net.curPlayer.mpState != SIM_NET_MPSTATE_PARENT) {
+                ProcessMPChildEvent(event); // from our parent
+            } else {
+                ProcessMPParentEvent(event); // a child leaving
+            }
+            break;
+        case SIM_NET_MPPACKETCMD_DATA:
+            if(event->packet->dataLength >= sizeof(SIM_Net_MpDataPacket_t)) {
+                ReceiveMPData(event);
+            }
+            break;
+        default:
+            printf("NET: Unknown MP packet %d\n", mpPacketBase->cmd);
             break;
     }
 }
@@ -799,6 +950,21 @@ static void ProcessMPParentEvent(ENetEvent * event)
     switch(mpPacketBase->cmd) {
         case SIM_NET_MPPACKETCMD_JOIN_REQ:
             {
+                if(net.curPlayer.mpState != SIM_NET_MPSTATE_PARENT || !net.curPlayer.entryFlag) {
+                    // Not a parent taking children right now (the child's scan saw an older
+                    // state): refuse, as a DS's association would fail
+                    SIM_Net_JoinRespPacket_t refusal = {};
+                    InitPacketHeader(&refusal.common.header);
+                    refusal.common.cmd = SIM_NET_MPPACKETCMD_JOIN_RESP;
+                    refusal.aid = 0;
+                    printf("NET: Refused a join request (not taking children now).\n");
+                    ENET_LOCK();
+                    ENetPacket * refusalPkt = enet_packet_create(&refusal, sizeof(refusal), ENET_PACKET_FLAG_RELIABLE);
+                    enet_peer_send(event->peer, SIM_NET_CHANNEL_APPDATA, refusalPkt);
+                    ENET_UNLOCK();
+                    break;
+                }
+
                 // Determine the AID
                 int aid = -1;
                 for(int i=1; i < 16; i++) {
@@ -821,8 +987,11 @@ static void ProcessMPParentEvent(ENetEvent * event)
                 joinResponse.aid = aid;
                 printf("NET: Received join request. Assigning AID %d.\n", aid);
 
+                ENET_LOCK();
                 ENetPacket * pkt = enet_packet_create(&joinResponse, sizeof(SIM_Net_JoinRespPacket_t), ENET_PACKET_FLAG_RELIABLE);
                 enet_peer_send(event->peer, SIM_NET_CHANNEL_APPDATA, pkt);
+                sMPPeer[aid] = event->peer;
+                ENET_UNLOCK();
 
                 if(event->peer->data != NULL) {
                     SDL_LockMutex(net.playerListMutex);
@@ -852,6 +1021,11 @@ static void ProcessMPParentEvent(ENetEvent * event)
             {
                 SIM_Net_DisconnectPacket_t * disconnectPacket = (SIM_Net_DisconnectPacket_t*)mpPacketBase;
                 net.aidBitmask &= ~(1 << disconnectPacket->sendingAid);
+                if(disconnectPacket->sendingAid < 16) {
+                    ENET_LOCK();
+                    sMPPeer[disconnectPacket->sendingAid] = NULL;
+                    ENET_UNLOCK();
+                }
 
                 printf("NET: Parent received disconnect from AID %d", disconnectPacket->sendingAid);
 
@@ -886,11 +1060,21 @@ static void ProcessMPChildEvent(ENetEvent * event)
         case SIM_NET_MPPACKETCMD_JOIN_RESP:
             {
                 SIM_Net_JoinRespPacket_t * joinRespPacket = (SIM_Net_JoinRespPacket_t*)event->packet->data;
+                if(joinRespPacket->aid == 0) {
+                    printf("NET: Join refused.\n");
+                    sJoinRefused = TRUE;
+                    SDL_SemPost(net.joinReqSemaphore);
+                    break;
+                }
                 printf("NET: Received join response. AID %d.\n", joinRespPacket->aid);
-                SDL_SemPost(net.joinReqSemaphore);
+                ENET_LOCK();
+                ClearMPLinks();
+                sMPPeer[0] = event->peer;
+                ENET_UNLOCK();
                 net.curPlayer.aid = joinRespPacket->aid;
                 net.curPlayer.mpState = SIM_NET_MPSTATE_CHILD;
                 SendMyPlayer();
+                SDL_SemPost(net.joinReqSemaphore);
                 break;
             }
         case SIM_NET_MPPACKETCMD_DISCONNECT:
@@ -900,9 +1084,12 @@ static void ProcessMPChildEvent(ENetEvent * event)
 
                 SIM_assert(disconnectPacket->sendingAid == 0);
                 printf("NET: Child received disconnect. Setting MP state to OFF.\n");
+                ENET_LOCK();
+                ClearMPLinks();
+                ENET_UNLOCK();
 
                 net.curPlayer.aid = 0;
-                net.curPlayer.mpState == SIM_NET_MPSTATE_OFF;
+                net.curPlayer.mpState = SIM_NET_MPSTATE_OFF;
                 SendMyPlayer();
 
                 SIM_WMSP_Indicate_t indicate = {};
@@ -933,16 +1120,329 @@ static void ReceiveMPData(ENetEvent * event)
     indicate.port = dataPacket->port;
     indicate.dataLen = dataPacket->dataLen;
     indicate.data = dataPacket->data;
-    printf("[RECV] ");
-    for(int i=0; i < dataPacket->dataLen; i++) {
-        printf("%02x", dataPacket->data[i]);
+    if(LogData()) {
+        printf("[RECV aid=%d port=%d len=%d] ", dataPacket->aid, dataPacket->port, dataPacket->dataLen);
+        for(int i=0; i < dataPacket->dataLen; i++) {
+            printf("%02x", dataPacket->data[i]);
+        }
+        printf("\n");
     }
-    printf("\n");
 
     WMSP_Indicate(&indicate);
 }
 #endif
 
+
+// --- stopping, joining in the background ------------------------------------------------------
+
+void SIM_Net_Stop()
+{
+    #ifndef SDK_BUILD_PROSPERO
+    ENET_LOCK();
+    if(net.enetHost != NULL) {
+        for(size_t i = 0; i < net.enetHost->peerCount; i++) {
+            ENetPeer * peer = &net.enetHost->peers[i];
+            if(peer->state != ENET_PEER_STATE_DISCONNECTED) {
+                enet_peer_disconnect_now(peer, 0);
+            }
+        }
+        enet_host_flush(net.enetHost);
+        enet_host_destroy(net.enetHost);
+        net.enetHost = NULL;
+    }
+    SDL_LockMutex(net.playerListMutex);
+    memset(net.playerList, 0, sizeof(net.playerList));
+    memset(net.peerList, 0, sizeof(net.peerList));
+    memset(&net.curPlayer, 0, sizeof(net.curPlayer));
+    net.playerCount = 0;
+    net.aidBitmask = 0;
+    SDL_UnlockMutex(net.playerListMutex);
+    ClearMPLinks();
+    sHostLost = FALSE;
+    if(net.state != SIM_NET_STATE_UNINITIALIZED) {
+        net.state = SIM_NET_STATE_DISCONNECTED;
+    }
+    ENET_UNLOCK();
+    #endif
+}
+
+static int ConnectThread(void * arg)
+{
+    (void)arg;
+    BOOL ok = SIM_Net_StartClient(sConnectAddress);
+    sConnectFailed = !ok;
+    SDL_AtomicSet(&sConnecting, 0);
+    return 0;
+}
+
+BOOL SIM_Net_StartClientAsync(const char * ipAddress)
+{
+    if(net.state != SIM_NET_STATE_DISCONNECTED || SDL_AtomicGet(&sConnecting) != 0) {
+        return FALSE;
+    }
+    snprintf(sConnectAddress, sizeof(sConnectAddress), "%s", ipAddress);
+    sConnectFailed = FALSE;
+    SDL_AtomicSet(&sConnecting, 1);
+    SDL_Thread * thread = SDL_CreateThread(ConnectThread, "NETJOIN", NULL);
+    if(thread == NULL) {
+        SDL_AtomicSet(&sConnecting, 0);
+        sConnectFailed = TRUE;
+        return FALSE;
+    }
+    SDL_DetachThread(thread);
+    return TRUE;
+}
+
+BOOL SIM_Net_IsConnecting()
+{
+    return SDL_AtomicGet(&sConnecting) != 0;
+}
+
+BOOL SIM_Net_TakeConnectFailed()
+{
+    BOOL failed = sConnectFailed;
+    sConnectFailed = FALSE;
+    return failed;
+}
+
+BOOL SIM_Net_HostLost()
+{
+    return sHostLost;
+}
+
+#ifndef SDK_BUILD_PROSPERO
+// --- finding each other on the network ---------------------------------------------------------
+//
+// A host says so on the local network every second (a UDP broadcast on SIM_NET_DISCOVERY_PORT:
+// "NTRLINK1", the game code and a name); while searching, the other devices listen for it.
+
+#define DISCOVERY_MAGIC "NTRLINK1"
+
+typedef struct {
+    char magic[8];
+    char gameCode[4];
+    char name[48];
+} DiscoveryPacket;
+
+static socket_t sDiscoverySocket = INVALID_SOCKET;   // sending (host)
+static socket_t sListenSocket = INVALID_SOCKET;      // receiving (searching)
+static SDL_atomic_t sSearching;
+static u64 sLastBeaconMs = 0;
+static SIM_Net_FoundHost sFound[SIM_NET_MAX_FOUND];
+static int sFoundCount = 0;
+static char sDeviceName[48] = "";
+
+static void SetNonBlocking(socket_t sock)
+{
+    #ifdef __WIN32__
+    u_long on = 1;
+    ioctlsocket(sock, FIONBIO, &on);
+    #else
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    #endif
+}
+
+static void GameCode(char out[4])
+{
+    const u8 * header = (const u8 *)HW_ROM_HEADER_BUF;
+    memcpy(out, header + 0x0C, 4);
+}
+
+void SIM_Net_SetDeviceName(const char * name)
+{
+    snprintf(sDeviceName, sizeof(sDeviceName), "%s", name != NULL ? name : "");
+}
+
+void SIM_Net_SetSearching(BOOL searching)
+{
+    const int was = SDL_AtomicSet(&sSearching, searching ? 1 : 0);
+    #ifdef SDK_BUILD_ANDROID
+    // Many devices drop broadcasts on Wi-Fi unless an app holds a multicast lock
+    if((was != 0) != (searching != FALSE)) {
+        JNIEnv * env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+        jobject activity = (jobject)SDL_AndroidGetActivity();
+        if(env != NULL && activity != NULL) {
+            jclass activityClass = env->GetObjectClass(activity);
+            jmethodID method = env->GetMethodID(activityClass, "setLanSearch", "(Z)V");
+            if(method != NULL) {
+                env->CallVoidMethod(activity, method, searching ? JNI_TRUE : JNI_FALSE);
+            }
+            env->ExceptionClear();
+            env->DeleteLocalRef(activityClass);
+            env->DeleteLocalRef(activity);
+        }
+    }
+    #else
+    (void)was;
+    #endif
+}
+
+int SIM_Net_GetFoundHosts(SIM_Net_FoundHost * out, int max)
+{
+    SDL_LockMutex(net.playerListMutex);
+    int count = sFoundCount < max ? sFoundCount : max;
+    memcpy(out, sFound, sizeof(SIM_Net_FoundHost) * count);
+    SDL_UnlockMutex(net.playerListMutex);
+    return count;
+}
+
+static void DiscoveryUpdate(void)
+{
+    const u64 now = SDL_GetTicks64();
+
+    // Hosting: say so every second
+    if(net.state == SIM_NET_STATE_HOST && now - sLastBeaconMs >= 1000) {
+        sLastBeaconMs = now;
+        if(sDiscoverySocket == INVALID_SOCKET) {
+            sDiscoverySocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if(sDiscoverySocket != INVALID_SOCKET) {
+                int on = 1;
+                setsockopt(sDiscoverySocket, SOL_SOCKET, SO_BROADCAST, (const char *)&on, sizeof(on));
+                SetNonBlocking(sDiscoverySocket);
+            }
+        }
+        if(sDiscoverySocket != INVALID_SOCKET) {
+            DiscoveryPacket packet;
+            memset(&packet, 0, sizeof(packet));
+            memcpy(packet.magic, DISCOVERY_MAGIC, 8);
+            GameCode(packet.gameCode);
+            snprintf(packet.name, sizeof(packet.name), "%s", sDeviceName[0] != '\0' ? sDeviceName : net.curPlayer.userName);
+            sockaddr_in_t to;
+            memset(&to, 0, sizeof(to));
+            to.sin_family = AF_INET;
+            to.sin_port = htons(SIM_NET_DISCOVERY_PORT);
+            to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+            sendto(sDiscoverySocket, (const char *)&packet, sizeof(packet), 0, (const sockaddr_t *)&to, sizeof(to));
+        }
+    } else if(net.state != SIM_NET_STATE_HOST && sDiscoverySocket != INVALID_SOCKET) {
+        closesocket(sDiscoverySocket);
+        sDiscoverySocket = INVALID_SOCKET;
+    }
+
+    // Searching: listen
+    const BOOL searching = SDL_AtomicGet(&sSearching) != 0 && net.state == SIM_NET_STATE_DISCONNECTED;
+    if(searching && sListenSocket == INVALID_SOCKET) {
+        sListenSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if(sListenSocket != INVALID_SOCKET) {
+            int on = 1;
+            setsockopt(sListenSocket, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));
+            #ifdef SO_REUSEPORT
+            setsockopt(sListenSocket, SOL_SOCKET, SO_REUSEPORT, (const char *)&on, sizeof(on));
+            #endif
+            setsockopt(sListenSocket, SOL_SOCKET, SO_BROADCAST, (const char *)&on, sizeof(on));
+            sockaddr_in_t addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(SIM_NET_DISCOVERY_PORT);
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            if(bind(sListenSocket, (const sockaddr_t *)&addr, sizeof(addr)) != 0) {
+                closesocket(sListenSocket);
+                sListenSocket = INVALID_SOCKET;
+            } else {
+                SetNonBlocking(sListenSocket);
+            }
+        }
+    } else if(!searching && sListenSocket != INVALID_SOCKET) {
+        closesocket(sListenSocket);
+        sListenSocket = INVALID_SOCKET;
+        SDL_LockMutex(net.playerListMutex);
+        sFoundCount = 0;
+        SDL_UnlockMutex(net.playerListMutex);
+    }
+    if(sListenSocket == INVALID_SOCKET) {
+        return;
+    }
+
+    char myCode[4];
+    GameCode(myCode);
+    SDL_LockMutex(net.playerListMutex);
+    while(TRUE) {
+        DiscoveryPacket packet;
+        sockaddr_in_t from;
+        #ifdef __WIN32__
+        int fromLength = sizeof(from);
+        #else
+        socklen_t fromLength = sizeof(from);
+        #endif
+        int got = recvfrom(sListenSocket, (char *)&packet, sizeof(packet), 0, (sockaddr_t *)&from, &fromLength);
+        if(got < (int)sizeof(packet)) {
+            break;
+        }
+        if(memcmp(packet.magic, DISCOVERY_MAGIC, 8) != 0 || memcmp(packet.gameCode, myCode, 4) != 0) {
+            continue;
+        }
+        packet.name[sizeof(packet.name) - 1] = '\0';
+        const u32 address = ntohl(from.sin_addr.s_addr);
+        int slot = -1;
+        for(int i = 0; i < sFoundCount; i++) {
+            if(sFound[i].address == address) {
+                slot = i;
+            }
+        }
+        if(slot < 0 && sFoundCount < SIM_NET_MAX_FOUND) {
+            slot = sFoundCount++;
+        }
+        if(slot >= 0) {
+            sFound[slot].address = address;
+            snprintf(sFound[slot].addressText, sizeof(sFound[slot].addressText), "%u.%u.%u.%u", (address >> 24) & 0xFF,
+                     (address >> 16) & 0xFF, (address >> 8) & 0xFF, address & 0xFF);
+            snprintf(sFound[slot].name, sizeof(sFound[slot].name), "%s", packet.name);
+            sFound[slot].lastSeenMs = now;
+        }
+    }
+    // Gone quiet: gone
+    for(int i = 0; i < sFoundCount;) {
+        if(now - sFound[i].lastSeenMs > 4000) {
+            sFound[i] = sFound[--sFoundCount];
+        } else {
+            i++;
+        }
+    }
+    SDL_UnlockMutex(net.playerListMutex);
+}
+
+BOOL SIM_Net_LocalAddress(char * out, int outSize)
+{
+    // The address the system would send from to the internet: a UDP "connection" sends
+    // nothing, it only picks the interface
+    out[0] = '\0';
+    socket_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if(sock == INVALID_SOCKET) {
+        return FALSE;
+    }
+    sockaddr_in_t to;
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(53);
+    to.sin_addr.s_addr = htonl(0x08080808);
+    BOOL ok = FALSE;
+    if(connect(sock, (const sockaddr_t *)&to, sizeof(to)) == 0) {
+        sockaddr_in_t mine;
+        #ifdef __WIN32__
+        int length = sizeof(mine);
+        #else
+        socklen_t length = sizeof(mine);
+        #endif
+        if(getsockname(sock, (sockaddr_t *)&mine, &length) == 0) {
+            const u32 address = ntohl(mine.sin_addr.s_addr);
+            if(address != 0) {
+                snprintf(out, outSize, "%u.%u.%u.%u", (address >> 24) & 0xFF, (address >> 16) & 0xFF,
+                         (address >> 8) & 0xFF, address & 0xFF);
+                ok = TRUE;
+            }
+        }
+    }
+    closesocket(sock);
+    return ok;
+}
+#else // SDK_BUILD_PROSPERO
+static void DiscoveryUpdate(void) {}
+void SIM_Net_SetDeviceName(const char * name) { (void)name; }
+void SIM_Net_SetSearching(BOOL searching) { (void)searching; }
+int SIM_Net_GetFoundHosts(SIM_Net_FoundHost * out, int max) { (void)out; (void)max; return 0; }
+BOOL SIM_Net_LocalAddress(char * out, int outSize) { if(outSize > 0) { out[0] = '\0'; } return FALSE; }
+#endif
 
 static void HostUpdatePlayerList()
 {
@@ -953,7 +1453,11 @@ static void HostUpdatePlayerList()
     playerListPkt.common.cmd = SIM_NET_MGMTPACKETCMD_PLAYER_LIST;
     playerListPkt.numPlayers = net.playerCount;
     memcpy(playerListPkt.playerList, net.playerList, sizeof(playerListPkt.playerList));
-    ENetPacket * pkt = enet_packet_create(&playerListPkt, sizeof(SIM_Net_PlayerListPacket_t), ENET_PACKET_FLAG_RELIABLE);
-    enet_host_broadcast(net.enetHost, SIM_NET_CHANNEL_MGMT, pkt);
+    ENET_LOCK();
+    if(net.enetHost != NULL) {
+        ENetPacket * pkt = enet_packet_create(&playerListPkt, sizeof(SIM_Net_PlayerListPacket_t), ENET_PACKET_FLAG_RELIABLE);
+        enet_host_broadcast(net.enetHost, SIM_NET_CHANNEL_MGMT, pkt);
+    }
+    ENET_UNLOCK();
     #endif
 }

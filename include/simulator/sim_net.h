@@ -12,6 +12,8 @@
 #include <SDL2/SDL.h>
 
 #define SIM_NET_PORT 2009
+#define SIM_NET_DISCOVERY_PORT 2010 // hosts say so on the local network (UDP broadcast)
+#define SIM_NET_MAX_FOUND 8
 #define SIM_NET_MAX_PLAYERS 16
 
 /* NTR0 */
@@ -50,6 +52,7 @@ typedef struct {
     int tgid;
     u8 userGameInfo[112]; //Max size of user game info, see NitroSDK documentation
     u8 userGameInfoLength;
+    u8 entryFlag; // a parent taking new children (WM_SetEntry / the parent parameter)
 } SIM_Net_Player_t;
 
 typedef enum {
@@ -178,6 +181,7 @@ const SIM_Net_Player_t * SIM_Net_GetPlayerList();
 
 void SIM_Net_SetGameInfo(int ggid, int tgid, u8 * userGameInfo, int userGameInfoLength);
 void SIM_Net_SetMPState(SIM_Net_MPState_t state);
+void SIM_Net_SetEntry(BOOL entry);
 
 BOOL SIM_Net_JoinMP(u8 * bssid, u8 * ssid);
 BOOL SIM_Net_DisconnectMP(u16 aidBitmap, u16 * resultBitmap);
@@ -185,6 +189,30 @@ BOOL SIM_Net_SendMPData(u16 aidBitmap, u8 port, u8 * data, int dataLen);
 
 
 int SIM_Net_Scan(WMBssDesc * bssDescOut);
+
+// Linking up from a UI (the settings' "Link play" page):
+// Stops hosting or leaves the host (a linked game sees a communication error)
+void SIM_Net_Stop();
+// Joins a host without waiting (SIM_Net_StartClient takes up to 5 seconds); then
+// SIM_Net_IsConnecting() until it's done, and SIM_Net_TakeConnectFailed() once if it failed
+BOOL SIM_Net_StartClientAsync(const char * ipAddress);
+BOOL SIM_Net_IsConnecting();
+BOOL SIM_Net_TakeConnectFailed();
+// Joined, and the host has gone (stopped, or out of reach)
+BOOL SIM_Net_HostLost();
+
+// Hosts on the local network: a host says so every second; while searching, they're listed
+typedef struct {
+    u32 address;
+    char addressText[16];
+    char name[48];
+    u64 lastSeenMs;
+} SIM_Net_FoundHost;
+void SIM_Net_SetSearching(BOOL searching);
+int SIM_Net_GetFoundHosts(SIM_Net_FoundHost * out, int max);
+void SIM_Net_SetDeviceName(const char * name); // the name hosts go by
+// This device's address on its network ("192.168.1.20")
+BOOL SIM_Net_LocalAddress(char * out, int outSize);
 
 #ifdef __cplusplus
 }

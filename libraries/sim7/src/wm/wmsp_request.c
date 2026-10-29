@@ -14,6 +14,7 @@ static void WmspRequestFuncDummy(OSMessage msg);
 
 static void ChangeWmState(WMStatus * status, int newState);
 
+
 static const WMSPRequestFunc WmspRequestFuncTable[WM_APIID_ASYNC_KIND_MAX] = {
     WMSP_Initialize,
     WMSP_Reset,
@@ -48,7 +49,7 @@ static const WMSPRequestFunc WmspRequestFuncTable[WM_APIID_ASYNC_KIND_MAX] = {
     WMSP_MeasureChannel,
     WmspRequestFuncDummy,
     WmspRequestFuncDummy,
-    WmspRequestFuncDummy,
+    WMSP_SetEntry,
     WmspRequestFuncDummy,
     WmspRequestFuncDummy,
     WmspRequestFuncDummy,
@@ -311,6 +312,7 @@ void WMSP_SetParentParam(OSMessage msg)
     MI_CpuCopy8((void *)param, (void *)&(status->pparam), WM_PARENT_PARAM_SIZE);
 
     SIM_Net_SetGameInfo(param->ggid, param->tgid, (u8*)param->userGameInfo, param->userGameInfoLength);
+    SIM_Net_SetEntry(param->entryFlag ? TRUE : FALSE);
 
     cb = (WMCallback *)WMSP_GetBuffer4Callback2Wm9();
     cb->apiid = WM_APIID_SET_P_PARAM;
@@ -350,6 +352,7 @@ void WMSP_StartParent(OSMessage msg)
     }
 
     #ifndef SDK_BUILD_ARM
+    SIM_Net_SetEntry(status->pparam.entryFlag ? TRUE : FALSE);
     SIM_Net_SetMPState(SIM_NET_MPSTATE_PARENT);
     #endif
 
@@ -385,7 +388,9 @@ void WMSP_EndParent(OSMessage msg)
     }
 
     ChangeWmState(status, WM_STATE_IDLE);
-    
+    #ifndef SDK_BUILD_ARM
+    SIM_Net_SetMPState(SIM_NET_MPSTATE_OFF); // children can't join any more
+    #endif
 
     status->wep_flag = FALSE;
     status->wepMode = WL_CMDLABEL_WEP_NO;
@@ -541,7 +546,16 @@ void WMSP_StartConnectEx(OSMessage msg)
         (void)WMSP_ReturnResult2Wm9((void *)callback);
     }
 
-    SIM_Net_JoinMP(args->pInfo->bssid, args->ssid);
+    if (!SIM_Net_JoinMP(args->pInfo->bssid, args->ssid))
+    {
+        // No answer, or the parent wasn't taking children: the association failed
+        WMStartConnectCallback *callback = (WMStartConnectCallback *)WMSP_GetBuffer4Callback2Wm9();
+        callback->apiid = WM_APIID_START_CONNECT;
+        callback->errcode = WM_ERRCODE_FAILED;
+        callback->state = WM_STATECODE_CONNECT_START;
+        (void)WMSP_ReturnResult2Wm9((void *)callback);
+        return;
+    }
 
     status->aid = SIM_Net_GetAID();
     status->child_bitmap = 0x0001;
@@ -570,11 +584,16 @@ void WMSP_Disconnect(OSMessage msg)
 {
     BOOL    result;
     u16     tryBmp;
-    u16     resBmp;
+    u16     resBmp = 0;
 
     WMStatus *status = WMSP_GetStatusStructure();
 
+    // The command's words are 64-bit on the port (WMi_SendCommand)
+    #ifdef SDK_PORT
+    tryBmp = (u16)(((u64 *)msg)[1]);
+    #else
     tryBmp = (u16)(((u32 *)msg)[1]);
+    #endif
 
     result = SIM_Net_DisconnectMP(tryBmp, &resBmp);
 
@@ -582,6 +601,12 @@ void WMSP_Disconnect(OSMessage msg)
     {
         if(status->state == WM_STATE_CHILD || status->state == WM_STATE_MP_CHILD) {
             ChangeWmState(status, WM_STATE_IDLE);
+        } else {
+            // A parent letting children go
+            OSIntrMode e = OS_DisableInterrupts();
+            status->child_bitmap &= ~resBmp;
+            status->mp_readyBitmap &= ~resBmp;
+            (void)OS_RestoreInterrupts(e);
         }
         WMDisconnectCallback *const callback =
             (WMDisconnectCallback *)WMSP_GetBuffer4Callback2Wm9();
@@ -795,6 +820,7 @@ void WMSP_SetGameInfo(OSMessage msg)
     status->pparam.CS_Flag = (u16)((attribute & WM_ATTR_FLAG_CS) ? 1 : 0);
 
     SIM_Net_SetGameInfo(status->pparam.ggid, status->pparam.tgid, (u8*)status->pparam.userGameInfo, status->pparam.userGameInfoLength);
+    SIM_Net_SetEntry(status->pparam.entryFlag ? TRUE : FALSE);
 
     {
         WMCallback *cb = (WMCallback *)WMSP_GetBuffer4Callback2Wm9();
@@ -883,3 +909,25 @@ void WMSP_StartScanEx(OSMessage msg)
     }
 }
 
+
+// WM_SetEntry: whether the parent takes new children (shown in the beacon the other devices
+// scan, as the entry attribute)
+void WMSP_SetEntry(OSMessage msg)
+{
+    WMStatus *status = WMSP_GetStatusStructure();
+    #ifdef SDK_PORT
+    const BOOL enabled = (BOOL)(((u64 *)msg)[1]);
+    #else
+    const BOOL enabled = (BOOL)(((u32 *)msg)[1]);
+    #endif
+
+    status->pparam.entryFlag = (u16)(enabled ? 1 : 0);
+    #ifndef SDK_BUILD_ARM
+    SIM_Net_SetEntry(enabled);
+    #endif
+
+    WMCallback *cb = (WMCallback *)WMSP_GetBuffer4Callback2Wm9();
+    cb->apiid = WM_APIID_SET_ENTRY;
+    cb->errcode = WM_ERRCODE_SUCCESS;
+    WMSP_ReturnResult2Wm9((void *)cb);
+}
