@@ -135,6 +135,7 @@ void EnterCart(const std::string &id) {
   snprintf(sCurrent.id, sizeof(sCurrent.id), "%s", sCurrentId.c_str());
   sCurrent.hasFiles = HasFiles(CartDir(sCurrentId)) ? TRUE : FALSE;
   ReadName(sCurrentId, &sCurrent);
+  LoadVersions();
 }
 
 // The game picker at launch: a card per game (touch, or the D-pad and A)
@@ -416,12 +417,14 @@ extern "C" void SIM_Carts_Add(void (*done)(BOOL ok, const char *id)) {
 }
 
 extern "C" BOOL SIM_Carts_UIActive(void) {
-  return (sPickerActive || AddOpen()) ? TRUE : FALSE;
+  return (sPickerActive || AddOpen() || AskActive()) ? TRUE : FALSE;
 }
 
 extern "C" void SIM_Carts_Back(void) {
   if (AddOpen()) {
     AddBack();
+  } else if (AskActive()) {
+    AskBack();
   }
 }
 
@@ -473,5 +476,7 @@ extern "C" void SIM_Carts_DrawUI(void) {
     DrawAdd();
   } else if (sPickerActive) {
     DrawPicker();
+  } else if (AskActive()) {
+    DrawAsk();
   }
 }

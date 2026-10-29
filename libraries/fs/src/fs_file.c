@@ -20,6 +20,7 @@
 #include <string.h>
 #include <SDL2/SDL.h>
 #include <simulator/sim_RomExtractor.h>
+#include <simulator/sim_carts.h>
 #endif
 
 #if SDK_VERSION_MAJOR == 5
@@ -515,6 +516,8 @@ BOOL FS_OpenFile (FSFile *p_file, const char *path)
 	{
 		path = path + 1;
 	}
+	// The version the game chose (sim_carts.h) may have its own copy
+	path = SIM_Carts_VersionFile(path);
 	p_file->pcFilePtr = NULL;
 	p_file->pcFilePtr = fopen(path, "rb");
 	if(p_file->pcFilePtr == NULL) {

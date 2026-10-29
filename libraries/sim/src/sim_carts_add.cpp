@@ -207,6 +207,170 @@ bool Overlap(const std::vector<Change> &a, const std::vector<Change> &b) {
   return false;
 }
 
+// --- files in a ROM image, and versions -------------------------------------------------------
+
+u32 Read32(const std::vector<u8> &rom, size_t offset) {
+  return offset + 4 <= rom.size() ? (u32)rom[offset] | ((u32)rom[offset + 1] << 8) | ((u32)rom[offset + 2] << 16) |
+                                        ((u32)rom[offset + 3] << 24)
+                                  : 0;
+}
+
+u16 Read16(const std::vector<u8> &rom, size_t offset) {
+  return offset + 2 <= rom.size() ? (u16)(rom[offset] | (rom[offset + 1] << 8)) : 0;
+}
+
+// Where a file of the ROM's file system is (path as the game opens it, e.g.
+// "poketool/personal/pl_personal.narc")
+bool RomFileRange(const std::vector<u8> &rom, const std::string &path, u32 *offset, u32 *size) {
+  const u32 fntOffset = Read32(rom, 0x40), fatOffset = Read32(rom, 0x48), fatSize = Read32(rom, 0x4C);
+  if (fntOffset == 0 || (size_t)fntOffset + 8 > rom.size()) {
+    return false;
+  }
+  u32 dir = 0;
+  size_t start = 0;
+  while (start < path.size()) {
+    size_t slash = path.find('/', start);
+    const std::string part = path.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+    const bool last = slash == std::string::npos;
+    start = last ? path.size() : slash + 1;
+
+    size_t p = fntOffset + Read32(rom, fntOffset + dir * 8);
+    u32 fileId = Read16(rom, fntOffset + dir * 8 + 4);
+    bool found = false;
+    while (p < rom.size()) {
+      const u8 type = rom[p++];
+      if (type == 0) {
+        break;
+      }
+      const size_t length = type & 0x7F;
+      if (p + length > rom.size()) {
+        return false;
+      }
+      bool match = length == part.size();
+      for (size_t c = 0; match && c < length; c++) {
+        match = tolower(rom[p + c]) == tolower((unsigned char)part[c]);
+      }
+      p += length;
+      if (type & 0x80) {
+        const u32 sub = Read16(rom, p) & 0xFFF;
+        p += 2;
+        if (match && !last) {
+          dir = sub;
+          found = true;
+          break;
+        }
+      } else {
+        if (match && last) {
+          if ((size_t)fileId * 8 + 8 > fatSize) {
+            return false;
+          }
+          const u32 begin = Read32(rom, fatOffset + fileId * 8), end = Read32(rom, fatOffset + fileId * 8 + 4);
+          if (end < begin || end > rom.size()) {
+            return false;
+          }
+          *offset = begin;
+          *size = end - begin;
+          return true;
+        }
+        fileId++;
+      }
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return false;
+}
+
+// A version's changes, as edits of the files the game keeps per version
+struct FileEdit {
+  std::string path;
+  u32 offset; // in the file
+  std::vector<u8> bytes;
+};
+
+// changes (made to rom in place) as edits of the version files; false if any is elsewhere
+bool AsVersionEdits(const std::vector<u8> &rom, const std::vector<Change> &changes, const std::vector<u8> &pool,
+                    std::vector<FileEdit> &edits) {
+  edits.clear();
+  const std::vector<std::string> paths = VersionPaths();
+  if (paths.empty() || changes.empty()) {
+    return false;
+  }
+  std::vector<std::pair<u32, u32>> ranges;
+  for (const std::string &path : paths) {
+    u32 offset = 0, size = 0;
+    ranges.push_back(RomFileRange(rom, path, &offset, &size) ? std::make_pair(offset, size) : std::make_pair(0u, 0u));
+  }
+  for (const Change &change : changes) {
+    bool inside = false;
+    for (size_t i = 0; i < paths.size(); i++) {
+      const u32 begin = ranges[i].first, size = ranges[i].second;
+      if (size > 0 && change.offset >= begin && (u64)change.offset + change.length <= (u64)begin + size) {
+        edits.push_back({ paths[i], change.offset - begin,
+                          std::vector<u8>(pool.begin() + change.data, pool.begin() + change.data + change.length) });
+        inside = true;
+        break;
+      }
+    }
+    if (!inside) {
+      edits.clear();
+      return false;
+    }
+  }
+  return true;
+}
+
+struct VersionPatch {
+  std::string patch; // its file name without the extension
+  std::vector<FileEdit> edits;
+};
+
+// Each version's files out of game (the game as built, without any version patch): first
+// the game's own, then one per version patch. False if a file isn't in the game.
+bool MakeVersionFiles(const std::vector<u8> &game, const std::vector<VersionPatch> &patches,
+                      std::vector<VersionFiles> &versions) {
+  versions.clear();
+  VersionFiles own;
+  own.name = VersionNameFor("");
+  for (const std::string &path : VersionPaths()) {
+    u32 offset = 0, size = 0;
+    if (!RomFileRange(game, path, &offset, &size)) {
+      return false;
+    }
+    own.files.push_back({ path, std::vector<u8>(game.begin() + offset, game.begin() + offset + size) });
+  }
+  versions.push_back(own);
+  for (const VersionPatch &patch : patches) {
+    VersionFiles version = own;
+    version.name = VersionNameFor(patch.patch);
+    version.patch = patch.patch;
+    for (const FileEdit &edit : patch.edits) {
+      for (auto &file : version.files) {
+        if (file.first == edit.path && (size_t)edit.offset + edit.bytes.size() <= file.second.size()) {
+          memcpy(&file.second[edit.offset], edit.bytes.data(), edit.bytes.size());
+        }
+      }
+    }
+    for (const VersionFiles &other : versions) {
+      if (other.name == version.name) {
+        version.name += " " + std::to_string(versions.size() + 1);
+      }
+    }
+    versions.push_back(version);
+  }
+  return true;
+}
+
+// The cart's info line for a game with versions: "RenegadePlatinum4997; versions Complete, Classic"
+std::string VersionsInfo(const std::string &info, const std::vector<VersionFiles> &versions) {
+  std::string text = info + (info.empty() ? "" : "; ") + "versions ";
+  for (size_t v = 0; v < versions.size(); v++) {
+    text += (v > 0 ? ", " : "") + versions[v].name;
+  }
+  return text;
+}
+
 // --- a folder's plan --------------------------------------------------------------------------
 
 struct Patch {
@@ -220,6 +384,8 @@ struct Option {
   std::vector<Change> changes;
   std::vector<u8> pool;
   int group = -1;
+  bool version = false; // only changes the version files: a version of the game, kept alongside
+  std::vector<FileEdit> edits; // a version's changes
 };
 
 struct Group {
@@ -233,6 +399,8 @@ struct Base {
   int patch = -1; // -1: the ROM as it is
   std::vector<Option> options;
   std::vector<Group> groups;
+  std::vector<int> versions;            // options that are versions of the game
+  std::vector<VersionFiles> versionFiles; // the game's own (first), then each version's
 };
 
 struct Unused {
@@ -298,15 +466,38 @@ std::string SkipReason(const std::string &name, const std::string &header) {
   return std::string();
 }
 
-void SortGroups(Plan &plan, Base &base) {
-  // Options that change the same bytes (or rebuild the game) can't go together
+// game: the base as built. Versions of it (patches only changing the version files) are
+// set aside; the other options are grouped
+void SortGroups(Plan &plan, Base &base, const std::vector<u8> &game) {
   const int count = (int)base.options.size();
+  for (int i = 0; i < count; i++) {
+    Option &option = base.options[i];
+    if (option.inPlace && AsVersionEdits(game, option.changes, option.pool, option.edits)) {
+      option.version = true;
+      base.versions.push_back(i);
+    }
+  }
+  if (!base.versions.empty()) {
+    std::vector<VersionPatch> patches;
+    for (int index : base.versions) {
+      patches.push_back({ plan.patches[base.options[index].patch].name, base.options[index].edits });
+    }
+    if (!MakeVersionFiles(game, patches, base.versionFiles)) {
+      for (int index : base.versions) {
+        base.options[index].version = false;
+      }
+      base.versions.clear();
+      base.versionFiles.clear();
+    }
+  }
+
+  // Options that change the same bytes (or rebuild the game) can't go together
   std::vector<int> parent(count);
   std::iota(parent.begin(), parent.end(), 0);
   std::function<int(int)> find = [&](int i) { return parent[i] == i ? i : parent[i] = find(parent[i]); };
   for (int i = 0; i < count; i++) {
     for (int j = i + 1; j < count; j++) {
-      if (base.options[i].inPlace && base.options[j].inPlace &&
+      if (base.options[i].inPlace && base.options[j].inPlace && !base.options[i].version && !base.options[j].version &&
           Overlap(base.options[i].changes, base.options[j].changes)) {
         parent[find(i)] = find(j);
       }
@@ -314,6 +505,9 @@ void SortGroups(Plan &plan, Base &base) {
   }
   std::vector<int> groupOf(count, -1);
   for (int i = 0; i < count; i++) {
+    if (base.options[i].version) {
+      continue;
+    }
     int root = find(i);
     if (groupOf[root] < 0) {
       groupOf[root] = (int)base.groups.size();
@@ -451,7 +645,7 @@ void Evaluate(Plan &plan) {
       used[q] = true;
       base.options.push_back(std::move(option));
     }
-    SortGroups(plan, base);
+    SortGroups(plan, base, built.data);
     plan.bases.push_back(std::move(base));
   }
   // Games with the most extras first
@@ -460,7 +654,7 @@ void Evaluate(Plan &plan) {
   if (!inPlace.empty() || plan.bases.empty()) {
     Base original;
     original.options = std::move(inPlace);
-    SortGroups(plan, original);
+    SortGroups(plan, original, rom);
     plan.bases.push_back(std::move(original));
   }
 
@@ -558,6 +752,8 @@ struct Built {
   std::string error;
   std::string id;
   std::string info;
+  bool versionsAdded = false; // versions added to a game already there (id)
+  std::string installed;      // that game's own version
 };
 
 // What the randomizer is to do with the new game (the game's SIM_Prj_Randomize)
@@ -591,8 +787,10 @@ void RandomizeBuilt(const Randomize &randomize, Built &built) {
   }
 }
 
-// Worker: extracts rom (patched or not) as a new game
-void Extract(const std::vector<u8> *patched, const std::string &romPath, const std::string &info, Built &built) {
+// Worker: extracts rom (patched or not) as a new game, with its versions (if any: the
+// first is the game's own files)
+void Extract(const std::vector<u8> *patched, const std::string &romPath, const std::string &info, Built &built,
+             const std::vector<VersionFiles> &versions = {}) {
   std::string path = romPath;
   std::string temp;
   if (patched != nullptr) {
@@ -625,6 +823,11 @@ void Extract(const std::vector<u8> *patched, const std::string &romPath, const s
     built.error = "The game could not be extracted (is there enough space?).";
     return;
   }
+  if (!versions.empty() && !WriteVersions(CartDir(id), versions, 0)) {
+    fs::remove_all(CartDir(id), error);
+    built.error = "The game's versions could not be saved (is there enough space?).";
+    return;
+  }
   if (!info.empty()) {
     WriteWholeFile(CartDir(id) + "/cart.info", (const u8 *)info.data(), info.size());
   }
@@ -638,35 +841,24 @@ struct Selection {
   std::vector<int> options; // indices into the base's options
 };
 
-// Worker: the folder's game with the chosen extras
-void BuildFromPlan(const Plan &plan, const Selection &selection, Built &built) {
+// Worker: the folder's game with the chosen extras, in memory (versions not applied)
+bool PatchFromPlan(const Plan &plan, const Selection &selection, std::vector<u8> &game, std::string &info,
+                   std::string &error) {
   const Base &base = plan.bases[selection.base];
   const std::string romPath = plan.roms[plan.rom];
-  if (base.patch < 0 && selection.options.empty()) {
-    SetStep("Checking the ROM...", -1.0f);
-    std::string header = ReadHeader(romPath, 16);
-    if (!GameCodeMatches((const u8 *)header.data(), header.size())) {
-      built.error = "That file is not a ROM of this game.";
-      return;
-    }
-    Extract(nullptr, romPath, "", built);
-    return;
-  }
-
   SetStep("Reading the ROM...", -1.0f);
-  std::vector<u8> game;
   if (!ReadWholeFile(romPath, game)) {
-    built.error = "The ROM could not be read.";
-    return;
+    error = "The ROM could not be read.";
+    return false;
   }
-  std::string info;
+  info.clear();
   if (base.patch >= 0) {
     const Patch &patch = plan.patches[base.patch];
     SetStep("Applying " + patch.name + "...", -1.0f);
     Applied applied = Apply(game, patch.path);
     if (!applied.error.empty() || applied.mismatches > 0) {
-      built.error = patch.name + " could not be applied.";
-      return;
+      error = patch.name + " could not be applied.";
+      return false;
     }
     game = std::move(applied.data);
     info = patch.name;
@@ -678,22 +870,141 @@ void BuildFromPlan(const Plan &plan, const Selection &selection, Built &built) {
     if (option.inPlace) {
       for (const Change &change : option.changes) {
         if ((size_t)change.offset + change.length > game.size()) {
-          built.error = patch.name + " could not be applied.";
-          return;
+          error = patch.name + " could not be applied.";
+          return false;
         }
         memcpy(&game[change.offset], &option.pool[change.data], change.length);
       }
     } else {
       Applied applied = Apply(game, patch.path);
       if (!applied.error.empty()) {
-        built.error = patch.name + " could not be applied.";
-        return;
+        error = patch.name + " could not be applied.";
+        return false;
       }
       game = std::move(applied.data);
     }
     info += (info.empty() ? "" : " + ") + patch.name;
   }
-  Extract(&game, romPath, info, built);
+  return true;
+}
+
+std::vector<VersionPatch> VersionPatches(const Plan &plan, const Base &base) {
+  std::vector<VersionPatch> patches;
+  for (int index : base.versions) {
+    patches.push_back({ plan.patches[base.options[index].patch].name, base.options[index].edits });
+  }
+  return patches;
+}
+
+// Worker: the folder's game with the chosen extras (and its versions)
+void BuildFromPlan(const Plan &plan, const Selection &selection, Built &built) {
+  const Base &base = plan.bases[selection.base];
+  const std::string romPath = plan.roms[plan.rom];
+  if (base.patch < 0 && selection.options.empty() && base.versions.empty()) {
+    SetStep("Checking the ROM...", -1.0f);
+    std::string header = ReadHeader(romPath, 16);
+    if (!GameCodeMatches((const u8 *)header.data(), header.size())) {
+      built.error = "That file is not a ROM of this game.";
+      return;
+    }
+    Extract(nullptr, romPath, "", built);
+    return;
+  }
+
+  std::vector<u8> game;
+  std::string info;
+  if (!PatchFromPlan(plan, selection, game, info, built.error)) {
+    return;
+  }
+  std::vector<VersionFiles> versions;
+  if (!base.versions.empty()) {
+    if (!MakeVersionFiles(game, VersionPatches(plan, base), versions)) {
+      built.error = "The game's versions could not be made.";
+      return;
+    }
+    info = VersionsInfo(info, versions);
+  }
+  Extract(&game, romPath, info, built, versions);
+}
+
+// Which of the versions the game in dir is (its own files), or -1
+int InstalledVersion(const std::string &dir, const std::vector<VersionFiles> &versions) {
+  for (size_t v = 0; v < versions.size(); v++) {
+    bool same = !versions[v].files.empty();
+    for (const auto &entry : versions[v].files) {
+      std::vector<u8> file;
+      same = same && ReadWholeFile(dir + "/" + entry.first, file) && file == entry.second;
+    }
+    if (same) {
+      return (int)v;
+    }
+  }
+  return -1;
+}
+
+// Worker: the versions added to a game already there, which is one of them (its version
+// files are that version's): it keeps its saves, which stay that version. Only the version
+// files change, so the extras it was made with (code) stay as they are.
+void AddVersionsTo(const Plan &plan, int baseIndex, const std::string &id, Built &built) {
+  const Base &base = plan.bases[baseIndex];
+  const std::string dir = CartDir(id);
+  Selection selection;
+  selection.base = baseIndex;
+  std::vector<u8> game;
+  std::string info;
+  if (!PatchFromPlan(plan, selection, game, info, built.error)) {
+    return;
+  }
+  SetStep("Comparing with the game you have...", -1.0f);
+  std::vector<VersionFiles> versions;
+  if (!MakeVersionFiles(game, VersionPatches(plan, base), versions)) {
+    built.error = "The game's versions could not be made.";
+    return;
+  }
+  const int installed = InstalledVersion(dir, versions);
+  if (installed < 0) {
+    built.error = "That game isn't one of these versions (it was made from other patches). Add it as a new game.";
+    return;
+  }
+  // Its info line: what it was made with, and the versions
+  SIM_Cart cart = {};
+  cart.hasFiles = TRUE;
+  ReadName(id, &cart);
+  info = cart.info;
+  for (const VersionFiles &version : versions) {
+    // "RenegadePlatinum4997 + ClassicVersion" -> "RenegadePlatinum4997"
+    const std::string part = " + " + version.patch;
+    const size_t at = version.patch.empty() ? std::string::npos : info.find(part);
+    if (at != std::string::npos) {
+      info.erase(at, part.size());
+    }
+  }
+  // A name that says which version it is ("Renegade Platinum Classic") gets the game's name
+  // for it with its versions (unless it was named otherwise)
+  char autoName[SIM_CART_NAME_LEN];
+  SIM_Prj_CartName(dir.c_str(), autoName, sizeof(autoName));
+  const bool renamed = strcmp(autoName, cart.name) != 0;
+
+  SetStep("Saving the versions...", -1.0f);
+  if (!WriteVersions(dir, versions, installed)) {
+    built.error = "The versions could not be saved (is there enough space?).";
+    return;
+  }
+  if (!renamed) {
+    SIM_Prj_CartName(dir.c_str(), autoName, sizeof(autoName));
+    const std::string line = std::string(autoName) + "\n";
+    WriteWholeFile(dir + "/cart.name", (const u8 *)line.data(), line.size());
+  }
+  if (info.empty() && base.patch >= 0) {
+    info = plan.patches[base.patch].name;
+  }
+  info = VersionsInfo(info, versions);
+  WriteWholeFile(dir + "/cart.info", (const u8 *)info.data(), info.size());
+  built.ok = true;
+  built.id = id;
+  built.info = info;
+  built.versionsAdded = true;
+  built.installed = versions[installed].name;
 }
 
 // Worker: a ROM and patches applied one after the other
@@ -718,6 +1029,7 @@ void BuildChain(const std::string &romPath, const std::vector<Patch> &patches, B
     return;
   }
   std::string info;
+  std::vector<VersionPatch> versionPatches; // patches that only make a version (kept alongside)
   for (size_t i = 0; i < patches.size(); i++) {
     SetStep("Applying " + patches[i].name + "...", (float)i / (float)patches.size());
     Applied applied = Apply(game, patches[i].path);
@@ -730,10 +1042,25 @@ void BuildChain(const std::string &romPath, const std::vector<Patch> &patches, B
                     "later carts and dumps, 3541 for early ones.)";
       return;
     }
+    std::vector<Change> changes;
+    std::vector<u8> pool;
+    std::vector<FileEdit> edits;
+    if (i > 0 && Diff(game, applied.data, changes, pool) && AsVersionEdits(game, changes, pool, edits)) {
+      versionPatches.push_back({ patches[i].name, std::move(edits) });
+      continue;
+    }
     game = std::move(applied.data);
     info += (info.empty() ? "" : " + ") + patches[i].name;
   }
-  Extract(&game, romPath, info, built);
+  std::vector<VersionFiles> versions;
+  if (!versionPatches.empty()) {
+    if (!MakeVersionFiles(game, versionPatches, versions)) {
+      built.error = "The game's versions could not be made.";
+      return;
+    }
+    info = VersionsInfo(info, versions);
+  }
+  Extract(&game, romPath, info, built, versions);
 }
 
 // --- the screen -------------------------------------------------------------------------------
@@ -750,6 +1077,7 @@ std::shared_ptr<Plan> sPlan;
 std::string sFolder;   // the folder chosen (an imported copy on Android)
 std::string sExtraRom; // a ROM chosen for a folder without one
 bool sScanning = false;
+int sPlanGeneration = 0; // a new plan (what's worked out from it is done again)
 
 std::string sRom;            // files mode
 std::vector<Patch> sChain;   // files mode
@@ -808,6 +1136,7 @@ void StartScan(int romIndex) {
         return;
       }
       sPlan = plan;
+      sPlanGeneration++;
     };
   });
 }
@@ -854,6 +1183,21 @@ void Added(const Built &built) {
   if (!built.ok) {
     sMessage = built.error;
     sFailed = true;
+    return;
+  }
+  if (built.versionsAdded) {
+    // A game already there got its versions: it keeps its saves
+    SIM_Cart cart = {};
+    cart.hasFiles = TRUE;
+    ReadName(built.id, &cart);
+    if (built.id == SIM_Carts_Current()->id) {
+      LoadVersions();
+    }
+    sMessage = std::string(cart.name) + " now has the versions too. Its saves stay " + built.installed +
+               "; starting a new game there asks which one it uses.";
+    sFailed = false;
+    ClearImports(); // done with the folder
+    sMode = Mode::MENU;
     return;
   }
   SIM_Cart cart = {};
@@ -912,7 +1256,7 @@ void StartBuild(const std::function<void(Built &)> &work) {
   });
 }
 
-void StartFolderBuild() {
+Selection CurrentSelection() {
   Selection selection;
   selection.base = sPlan->base;
   const Base &base = sPlan->bases[selection.base];
@@ -921,8 +1265,54 @@ void StartFolderBuild() {
       selection.options.push_back(group.options[group.selected - 1]);
     }
   }
+  return selection;
+}
+
+void StartFolderBuild() {
+  const Selection selection = CurrentSelection();
   std::shared_ptr<Plan> plan = sPlan; // not changed while the work runs
   StartBuild([plan, selection](Built &built) { BuildFromPlan(*plan, selection, built); });
+}
+
+// The versions added to a game already there instead
+void StartAddVersions(const std::string &id) {
+  const int base = sPlan->base;
+  std::shared_ptr<Plan> plan = sPlan;
+  sMessage.clear();
+  sFailed = false;
+  StartJob([plan, base, id] {
+    auto built = std::make_shared<Built>();
+    AddVersionsTo(*plan, base, id, *built);
+    sJob.finish = [built] { Added(*built); };
+  });
+}
+
+// Games already added that are this one as one of its versions, without the others (they
+// can get them, keeping their saves)
+struct VersionMatch {
+  std::string id;
+  std::string name;
+  std::string version;
+};
+
+std::vector<VersionMatch> FindVersionMatches(const Base &base) {
+  std::vector<VersionMatch> matches;
+  if (base.versionFiles.empty()) {
+    return matches;
+  }
+  SIM_Cart carts[SIM_CARTS_MAX];
+  const int count = SIM_Carts_List(carts);
+  for (int i = 0; i < count; i++) {
+    const std::string dir = CartDir(carts[i].id);
+    if (!carts[i].hasFiles || HasVersions(dir) || strstr(carts[i].info, "Randomized") != nullptr) {
+      continue;
+    }
+    const int v = InstalledVersion(dir, base.versionFiles);
+    if (v >= 0) {
+      matches.push_back({ carts[i].id, carts[i].name, base.versionFiles[v].name });
+    }
+  }
+  return matches;
 }
 
 void StartFilesBuild() {
@@ -1028,6 +1418,9 @@ void DrawRandomizer() {
 }
 
 void DrawMenu() {
+  if (!sMessage.empty()) {
+    Status(sMessage.c_str(), sFailed);
+  }
   Note("Add another game next to the ones you have, like Drayano's Renegade Platinum. Each game keeps its own saves.");
   if (Button(PickerLabel("Choose a folder"),
              "A folder with your Pokemon Platinum (USA) ROM and the patches for it (.xdelta). The app works out which "
@@ -1042,8 +1435,8 @@ void DrawMenu() {
   }
   Section("Renegade Platinum");
   Note("Unzip the download from Drayano's page, put your ROM in the same folder (or choose it after the folder), and "
-       "choose the folder. RenegadePlatinum4997 (3541 for early ROMs) goes on the ROM; Classic and the shiny rate "
-       "patches show up as extras.");
+       "choose the folder. RenegadePlatinum4997 (3541 for early ROMs) goes on the ROM; the shiny rate and speed-up "
+       "patches show up as extras. Classic comes along as a version: each new game asks Classic or Complete.");
   const SIM_RandomizerOption *options = nullptr;
   if (SIM_Prj_RandomizerOptions(&options) > 0) {
     Section("Randomizer");
@@ -1165,6 +1558,38 @@ void DrawFolder() {
     } else if (plan.patches.empty()) {
       Note("There are no patches in this folder: the ROM is added as it is.");
     }
+
+    // Versions: all of them come with the game
+    if (base != nullptr && base->versionFiles.size() > 1) {
+      Section("Versions");
+      std::string names;
+      for (size_t v = 0; v < base->versionFiles.size(); v++) {
+        names += (v == 0 ? "" : v + 1 == base->versionFiles.size() ? " and " : ", ") + base->versionFiles[v].name;
+      }
+      std::string text = names + ": both come with the game. Each new game asks which one it uses, and a save keeps "
+                         "the one it started with.";
+      Note(text.c_str());
+
+      static int sMatchedPlan = -1;
+      static int sMatchedBase = -1;
+      static std::vector<VersionMatch> sMatches;
+      if (sMatchedPlan != sPlanGeneration || sMatchedBase != plan.base) {
+        sMatchedPlan = sPlanGeneration;
+        sMatchedBase = plan.base;
+        sMatches = FindVersionMatches(*base);
+      }
+      for (size_t m = 0; m < sMatches.size(); m++) {
+        ImGui::PushID(2000 + (int)m);
+        std::string label = "Add them to " + sMatches[m].name;
+        std::string help = "You have it already, as " + sMatches[m].version + ": it gets the other version too and "
+                           "keeps its saves (they stay " + sMatches[m].version + ") and its extras.";
+        if (Button(label.c_str(), help.c_str(), false, sWaiting == Waiting::NOTHING)) {
+          StartAddVersions(sMatches[m].id);
+          sMatchedPlan = -1;
+        }
+        ImGui::PopID();
+      }
+    }
   }
 
   if (!plan.unused.empty()) {
@@ -1227,8 +1652,8 @@ void DrawFiles() {
     RemoveIfImported(sChain.back().path);
     sChain.pop_back();
   }
-  Note("Renegade Platinum: your Platinum (USA) ROM, then RenegadePlatinum4997.xdelta (3541 for early ROMs), then "
-       "ClassicVersion.xdelta for Classic.");
+  Note("Renegade Platinum: your Platinum (USA) ROM, then RenegadePlatinum4997.xdelta (3541 for early ROMs). Add "
+       "ClassicVersion.xdelta too and both versions come with the game: each new game asks which one.");
 
   DrawRandomizer();
 

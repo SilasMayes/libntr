@@ -5,6 +5,7 @@
 #include <simulator/sim_carts.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace SIM::Carts {
@@ -21,6 +22,22 @@ std::string FileName(const std::string &path);
 // Removes a file or folder the pickers copied into the data directory's imports/
 void RemoveIfImported(const std::string &path);
 std::string NewCartId();
+
+// sim_carts_versions.cpp
+struct VersionFiles {
+  std::string name;  // "Classic"
+  std::string patch; // the patch that makes it ("" for the game without one)
+  std::vector<std::pair<std::string, std::vector<u8>>> files; // ROM path, contents
+};
+std::vector<std::string> VersionPaths(); // SIM_Prj_VersionFiles
+std::string VersionNameFor(const std::string &patchName); // "" for the game without a patch
+bool HasVersions(const std::string &dir);
+// versions/<name>/... for every version but installed (whose files are the game's own), and versions.ini
+bool WriteVersions(const std::string &dir, const std::vector<VersionFiles> &versions, int installed);
+void LoadVersions(); // the game just entered (working directory)
+bool AskActive();
+void DrawAsk();
+void AskBack();
 
 bool PickerActive();
 void PickerPlay(const std::string &id); // the picker starts this game

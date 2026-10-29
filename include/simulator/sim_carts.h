@@ -48,6 +48,37 @@ int SIM_Prj_RandomizerOptions(const SIM_RandomizerOption **options);
 BOOL SIM_Prj_Randomize(const char *dir, u32 seed, u32 options, char *summary, int summarySize, char *error,
                        int errorSize);
 
+// Versions. A patch that only changes files the game keeps per save (SIM_Prj_VersionFiles;
+// Renegade Platinum's Classic patch only changes the Pokemon data) isn't an extra: the game
+// added holds both versions, its own files being one of them and versions/<name>/ holding
+// the other's copies of those files (versions.ini lists them). The game then chooses a
+// version per save: SIM_Carts_UseVersion makes the game's file opens (FS_OpenFile) go to
+// that version's copies, and SIM_Carts_AskVersion asks which one a new game gets.
+#define SIM_CART_VERSIONS_MAX 4
+#define SIM_CART_VERSION_NAME_LEN 24
+
+// Game hooks (weak defaults: none, and "Standard" / the patch's name without "Version"):
+// the files (paths in the ROM) a version may differ in, and a version's name from the patch
+// that makes it (patchName NULL: the game without one)
+int SIM_Prj_VersionFiles(const char *const **paths);
+void SIM_Prj_VersionName(const char *patchName, char *name, int nameSize);
+
+// The running game's versions; 0 if it has none (only its own files). installed (may be
+// NULL) receives which one its own files are.
+int SIM_Carts_Versions(char names[SIM_CART_VERSIONS_MAX][SIM_CART_VERSION_NAME_LEN], int *installed);
+// The version whose files the game opens from now on (NULL: the installed one)
+void SIM_Carts_UseVersion(const char *name);
+const char *SIM_Carts_VersionInUse(void); // "" when the game has no versions
+// The file to open for path (relative, as the game opens it): the version's copy if it has one
+const char *SIM_Carts_VersionFile(const char *path);
+
+// Asks which version (one card each, with its description); the game waits meanwhile (its
+// logic pauses while the question is up). Then SIM_Carts_TakeVersionAnswer: -2 while
+// asking, -1 if the player went back (canCancel), else the index chosen (once).
+void SIM_Carts_AskVersion(const char *title, const char *note, const char *const *names,
+                          const char *const *descriptions, int count, BOOL canCancel);
+int SIM_Carts_TakeVersionAnswer(void);
+
 // Settings file in the data directory, whichever game is running
 const char *SIM_SettingsPath(const char *fileName);
 
