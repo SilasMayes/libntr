@@ -1,0 +1,102 @@
+name: platinum_apk
+
+# Builds Pokémon Platinum's Android APK (SilasMayes/pokeplatinum, thor-android) against this
+# libntr commit. The game's libntr wrap follows thor-android's head, so a libntr change that
+# breaks it would otherwise only show up in the game's next build. Nothing is published: the
+# APK is kept as a short-lived artifact.
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+    inputs:
+      platinum_ref:
+        description: 'pokeplatinum branch, tag or commit to build'
+        default: thor-android
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platinum_apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  platinum_apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install Software
+        # apt mirrors occasionally hang; fail fast instead of waiting hours
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update -y -o Acquire::Retries=3 -o Acquire::http::Timeout=60
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
+            git python3 gcc g++ cmake ninja-build nasm flex bison libpng-dev pkg-config \
+            gcc-arm-none-eabi
+
+      - name: Checkout pokeplatinum
+        uses: actions/checkout@v5
+        with:
+          repository: SilasMayes/pokeplatinum
+          ref: ${{ inputs.platinum_ref || 'thor-android' }}
+          path: pokeplatinum
+
+      # Meson uses a subproject directory that already exists instead of cloning the wrap
+      - name: Checkout this libntr as the game's subproject
+        uses: actions/checkout@v5
+        with:
+          path: pokeplatinum/subprojects/libntr
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Fetch Meson
+        working-directory: pokeplatinum
+        run: make meson
+
+      - name: Build APK
+        working-directory: pokeplatinum
+        run: |
+          echo "NDK: $ANDROID_NDK_HOME"
+          echo "pokeplatinum $(git rev-parse --short HEAD), libntr $(git -C subprojects/libntr rev-parse --short HEAD)"
+          export VERSION_NAME="libntr-$(git -C subprojects/libntr rev-parse --short HEAD)"
+          set -o pipefail
+          ./tools/android/build_apk.sh 2>&1 | tee build.log
+
+      - name: Report build errors
+        if: failure()
+        working-directory: pokeplatinum
+        run: |
+          [ -f build.log ] || exit 0
+          python3 - <<'PY'
+          import re
+          lines = open('build.log', errors='replace').read().splitlines()
+          failed = [l for l in lines if l.startswith('FAILED:')]
+          errors = list(dict.fromkeys(l.strip() for l in lines
+                                      if re.search(r'error:|undefined (symbol|reference)|fatal|ERROR|What went wrong', l)))
+          if failed:
+              errors.insert(0, f'{len(failed)} failed build steps, first: {failed[0]}')
+          def emit(title, chunk):
+              msg = '\n'.join(chunk)[-30000:]
+              msg = msg.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+              print(f'::error title={title}::{msg}')
+          if errors:
+              emit('Errors', errors[:150])
+          emit('Log tail', lines[-200:])
+          PY
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: pokeplatinum-android-libntr-${{ github.sha }}
+          path: pokeplatinum/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
