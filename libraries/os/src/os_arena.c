@@ -1,8 +1,13 @@
 #include <nitro.h>
 
 #ifdef SDK_PORT
-#define OSi_TRUNC(n, a)     (((u64) (n)) & ~((a) - 1))
-#define OSi_ROUND(n, a)     (((u64) (n) + (a) - 1) & ~((a) - 1))
+#include <stdint.h>
+// Pointer-wide: the mask is widened before ~, so the upper half of a 64-bit address survives
+#define OSi_TRUNC(n, a)     (((uintptr_t) (n)) & ~((uintptr_t) (a) - 1))
+#define OSi_ROUND(n, a)     (((uintptr_t) (n) + (a) - 1) & ~((uintptr_t) (a) - 1))
+// What a game takes from an arena holds 64-bit pointers and the port's mutexes and atomics: align
+// at least as malloc does (16), whatever the game asks for (the DS games ask for 4)
+#define OSi_PORT_ALIGN(a)   ((a) < 16 ? 16 : (a))
 #else
 #define OSi_TRUNC(n, a)              (((u32) (n)) & ~((a) - 1))
 #define OSi_ROUND(n, a)              (((u32) (n) + (a) - 1) & ~((a) - 1))
@@ -418,14 +423,11 @@ void * OS_AllocFromArenaLo (OSArenaId id, u32 size, u32 align)
     }
 
     #ifdef SDK_PORT
-    arenaLo = ptr = (void *)(ptr);
-    arenaLo += size;
-    arenaLo = (u8 *)(arenaLo);
-    #else
+    align = OSi_PORT_ALIGN(align);
+    #endif
     arenaLo = ptr = (void *)OSi_ROUND(ptr, align);
     arenaLo += size;
     arenaLo = (u8 *)OSi_ROUND(arenaLo, align);
-    #endif
 
     if (arenaLo > OS_GetArenaHi(id)) {
         return NULL;
@@ -446,6 +448,9 @@ void * OS_AllocFromArenaHi (OSArenaId id, u32 size, u32 align)
         return NULL;
     }
 
+    #ifdef SDK_PORT
+    align = OSi_PORT_ALIGN(align);
+    #endif
     arenaHi = (u8 *)OSi_TRUNC(arenaHi, align);
     arenaHi -= size;
     arenaHi = ptr = (void *)OSi_TRUNC(arenaHi, align);
