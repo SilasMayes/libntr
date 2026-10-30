@@ -2,6 +2,13 @@ option('standalone', type: 'boolean', value: false, description: 'Build a standa
 option('mwrap_ver', type: 'string', value: 'default', description: 'Version of Metrowerks toolchain to use')
 option('mwrap_sdk', type: 'string', value: 'default', description: 'Version of Metrowerks libraries to use')
 option('sp1p3_conditionals', type: 'boolean', value: false)
+# Accepted so a game can pass the NitroSDK options pret's builds use (ntrtwl/NitroSDK); they
+# pick Metrowerks versions and SDK patch levels for the DS libraries and do nothing here.
+option('mwrap_patch3_libs', type: 'string', value: 'default', description: 'Accepted for NitroSDK compatibility, no effect')
+option('mwrap_arm7', type: 'string', value: 'default', description: 'Accepted for NitroSDK compatibility, no effect')
+option('mwrap_libwl_arm7', type: 'string', value: 'default', description: 'Accepted for NitroSDK compatibility, no effect')
+option('patch3', type: 'boolean', value: false, description: 'Accepted for NitroSDK compatibility, no effect')
+option('irc_support', type: 'boolean', value: false, description: 'Accepted for NitroSDK compatibility, no effect (the HeartGold/SoulSilver card IR chip is always simulated)')
 option('build_target', type: 'combo', choices: ['arm', 'win64', 'linux', 'nx', 'prospero', 'android'], value: 'arm', description: 'Target build platform', yield: true)
 option('tracy_enable' , type : 'boolean' , value : false, description : 'Enable profiling', yield: true)
 option('sdk_version_major', type: 'integer', value: 4, description: 'Major version of the SDK. Currently supported versions: 4 (NitroSDK 4.x), 5 (TwlSDK)', yield: true)
