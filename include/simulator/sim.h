@@ -55,6 +55,7 @@ extern "C" {
 
 void SIM_PreRenderVBlank(void);
 void SIM_PostRenderVBlank(void);
+void SIM_Begin3DCommand(void); // clears the 3D after a swap once the next frame starts
 void SIM_procPXI(void);
 void SIM_procPXI7to9(void);
 int SIM_procPxiThread( void * arg );

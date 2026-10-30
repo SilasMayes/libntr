@@ -2221,10 +2221,24 @@ u64 SIM_GetFullFrameTime() {
 
 void SIM_PreRenderVBlank() { SDL_SemPost(vcountVblankSemaphore); }
 
-void SIM_PostRenderVBlank() {
-  if (G3SIM_SwapBuffersCalledThisFrame()) {
+// The DS keeps showing a swapped 3D frame at every vblank until the next one is swapped in
+// (both vblanks of a 30 Hz frame). The 3D is drawn straight into the buffer shown here, so it's
+// cleared when the next frame's first 3D command comes rather than at the vblank after the swap:
+// a game that swaps before the first of its two vblanks (HeartGold's summary screen, Pokemon
+// picture) otherwise showed its 3D at one of them only.
+static bool s3DClearPending = false;
+
+void SIM_Begin3DCommand() {
+  if (s3DClearPending) {
+    s3DClearPending = false;
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  }
+}
+
+void SIM_PostRenderVBlank() {
+  if (G3SIM_SwapBuffersCalledThisFrame()) {
+    s3DClearPending = true;
     G3SIM_ResetSwapBuffersCall();
   }
   // Reset Vcount
