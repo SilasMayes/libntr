@@ -149,6 +149,20 @@ void MI_Copy128B(const void* pSrc, void* pDest)
     memcpy( pDest, pSrc, 128 );
 }
 
+// The 32-bit pattern in every word, as the DS does it: words are stored while the next one
+// starts before destp + size, so a size that isn't a multiple of 4 rounds up to whole words
+// (HeartGold clears 5 bytes of a struct this way and gets 8).
+void MIi_CpuClearFast( u32 data, void *destp, u32 size )
+{
+    SIM_assert_msg(size < HW_MAIN_MEM_MAIN_SIZE, "Attempt to call MIi_CpuClearFast with a size of %d bytes, which is larger than the DS memory.", size);
+    u8 *p = (u8 *)destp;
+    u8 *end = p + size;
+    for ( ; p < end; p += 4 )
+    {
+        memcpy( p, &data, 4 );
+    }
+}
+
 #if SDK_VERSION_MAJOR == 5
 void MI_CpuMove(register const void *srcp, register void *destp,
                     register u32 size) {

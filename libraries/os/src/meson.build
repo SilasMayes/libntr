@@ -32,6 +32,10 @@ libos_srcs = files(
     'os_terminate_proc.c'
 )
 
+if(build_target != 'arm')
+    libos_srcs += files('os_systemCall_port.c')
+endif
+
 if(sdk_version_major == 5)
     libos_srcs += files(
         'os_application_jump.c',
