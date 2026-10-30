@@ -29,28 +29,52 @@ void MTX_Identity33_(MtxFx33* pDst)
     return;
 }
 
+// The C versions below write every element, as the SDK's asm does (callers rely on it)
 void MTX_Copy33To43_(const MtxFx33* pSrc, MtxFx43* pDst)
 {
-    SIM_assert_always_msg("Not implemented");
-    return;
+    for (int i = 0; i < 9; i++) {
+        pDst->a[i] = pSrc->a[i];
+    }
+    pDst->_30 = 0;
+    pDst->_31 = 0;
+    pDst->_32 = 0;
 }
 
 void MTX_Copy33To44_(const MtxFx33* pSrc, MtxFx44* pDst)
 {
-    SIM_assert_always_msg("Not implemented");
-    return;
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            pDst->m[r][c] = pSrc->m[r][c];
+        }
+        pDst->m[r][3] = 0;
+    }
+    pDst->_30 = 0;
+    pDst->_31 = 0;
+    pDst->_32 = 0;
+    pDst->_33 = FX32_ONE;
 }
 
 void MTX_Transpose33_(const MtxFx33* pSrc, MtxFx33* pDst)
 {
-    SIM_assert_always_msg("Not implemented");
-    return;
+    MtxFx33 t = *pSrc; // pSrc and pDst may be the same matrix
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            pDst->m[r][c] = t.m[c][r];
+        }
+    }
 }
 
 void MTX_Scale33_(MtxFx33* pDst, fx32 x, fx32 y, fx32 z)
 {
-    SIM_assert_always_msg("Not implemented");
-    return;
+    pDst->_00 = x;
+    pDst->_01 = 0;
+    pDst->_02 = 0;
+    pDst->_10 = 0;
+    pDst->_11 = y;
+    pDst->_12 = 0;
+    pDst->_20 = 0;
+    pDst->_21 = 0;
+    pDst->_22 = z;
 }
 #else
 
@@ -182,8 +206,7 @@ void MTX_RotY33_(MtxFx33 * pDst, fx32 sinVal, fx32 cosVal)
     pDst->a[3] = r3;
     pDst->a[5] = r3;
     pDst->a[7] = r3;
-    //TODO: These might need to be swapped
-    pDst->a[6] = sinVal;
+    pDst->a[6] = sinVal; // as the SDK's asm
     pDst->a[2] = -sinVal;
 
     r3 = 1;

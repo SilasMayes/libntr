@@ -26,16 +26,29 @@ void MTX_Identity43_(MtxFx43* pDst)
     return;
 }
 
+// The C versions below write every element, as the SDK's asm does (callers rely on it)
 void MTX_Copy43To44_(const MtxFx43* pSrc, MtxFx44* pDst)
 {
-    //PCPORT_TODO
-    SIM_assert_always_msg("Not implemented");
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 3; c++) {
+            pDst->m[r][c] = pSrc->m[r][c];
+        }
+        pDst->m[r][3] = (r == 3) ? FX32_ONE : 0;
+    }
 }
 
+// The 3x3 part transposed, the translation cleared
 void MTX_Transpose43_(const MtxFx43* pSrc, MtxFx43* pDst)
 {
-    //PCPORT_TODO
-    SIM_assert_always_msg("Not implemented");
+    MtxFx43 t = *pSrc; // pSrc and pDst may be the same matrix
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            pDst->m[r][c] = t.m[c][r];
+        }
+    }
+    pDst->_30 = 0;
+    pDst->_31 = 0;
+    pDst->_32 = 0;
 }
 #else
 asm void MTX_Identity43_ (register MtxFx43 *pDst)
@@ -108,6 +121,9 @@ void MTX_TransApply43 (const MtxFx43 *pSrc, MtxFx43 *pDst, fx32 x, fx32 y, fx32 
 #ifdef SDK_PORT
 void MTX_Scale43_(register MtxFx43* pDst, register fx32 x, register fx32 y, register fx32 z)
 {
+	for (int i = 0; i < 12; i++) {
+		pDst->a[i] = 0;
+	}
 	pDst->_00 = x;
 	pDst->_11 = y;
 	pDst->_22 = z;
@@ -154,6 +170,9 @@ void MTX_RotX43_(MtxFx43 * pDst, fx32 sinVal, fx32 cosVal) {
     pDst->a[6] = 0;
     pDst->a[7] = -sinVal;
     pDst->a[8] = cosVal;
+    pDst->a[9] = 0; // the translation, as the SDK's asm
+    pDst->a[10] = 0;
+    pDst->a[11] = 0;
 }
 
 void MTX_RotY43_(MtxFx43 * pDst, fx32 sinVal, fx32 cosVal) {
@@ -166,6 +185,9 @@ void MTX_RotY43_(MtxFx43 * pDst, fx32 sinVal, fx32 cosVal) {
     pDst->a[6] = sinVal;
     pDst->a[7] = 0;
     pDst->a[8] = cosVal;
+    pDst->a[9] = 0; // the translation, as the SDK's asm
+    pDst->a[10] = 0;
+    pDst->a[11] = 0;
 }
 
 void MTX_RotZ43_(MtxFx43 * pDst, fx32 sinVal, fx32 cosVal) {
@@ -178,6 +200,9 @@ void MTX_RotZ43_(MtxFx43 * pDst, fx32 sinVal, fx32 cosVal) {
     pDst->a[6] = 0;
     pDst->a[7] = 0;
     pDst->a[8] = FX32_ONE;
+    pDst->a[9] = 0; // the translation, as the SDK's asm
+    pDst->a[10] = 0;
+    pDst->a[11] = 0;
 }
 #else
 #include <nitro/code16.h>

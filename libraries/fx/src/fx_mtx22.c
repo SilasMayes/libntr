@@ -34,7 +34,10 @@ void MTX_Transpose22_(const MtxFx22* pSrc, MtxFx22* pDst)
 
 void MTX_Scale22_(MtxFx22* pDst, fx32 x, fx32 y)
 {
-    //TODO
+    pDst->_00 = x;
+    pDst->_01 = 0;
+    pDst->_10 = 0;
+    pDst->_11 = y;
 }
 
 void MTX_Rot22_(MtxFx22 * pDst, fx32 sinVal, fx32 cosVal)
