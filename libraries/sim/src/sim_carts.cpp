@@ -227,20 +227,28 @@ void ReadName(const std::string &id, SIM_Cart *cart) {
   }
 }
 
-// The game code (4 letters at 0x0C) this build runs
-void ExpectedGameCode(char expected[5]) {
-  memset(expected, 0, 5);
-#ifdef LIBNTR_CARD_GAME_CODE
-  memcpy(expected, LIBNTR_CARD_GAME_CODE, 4);
+// The game codes (4 letters at 0x0C) this build runs, comma-separated ("CPUE", "IPKE,IPGE"):
+// the card_game_code option, or else the code in the ROM header loaded at launch. "": any.
+std::string GameCodeList() {
+#ifdef LIBNTR_CARD_GAME_CODES
+  const char codes[] = LIBNTR_CARD_GAME_CODES; // 4 letters each
+  std::string list;
+  for (size_t i = 0; i + 4 < sizeof(codes); i += 4) {
+    if (!list.empty()) {
+      list += ',';
+    }
+    list.append(codes + i, 4);
+  }
+  return list;
 #else
-  memcpy(expected, (const char *)HW_ROM_HEADER_BUF + 0x0C, 4);
+  char code[5] = {0};
+  memcpy(code, (const char *)HW_ROM_HEADER_BUF + 0x0C, 4);
+  return code;
 #endif
 }
 
 bool GameCodeMatches(const u8 *header, size_t size) {
-  char expected[5];
-  ExpectedGameCode(expected);
-  return size >= 0x10 && (expected[0] == '\0' || memcmp(header + 0x0C, expected, 4) == 0);
+  return size >= 0x10 && SIM_Carts_RunsGameCode((const char *)header + 0x0C);
 }
 
 bool ReadWholeFile(const std::string &path, std::vector<u8> &out) {
@@ -316,6 +324,22 @@ void PickerPlay(const std::string &id) {
 } // namespace SIM::Carts
 
 using namespace SIM::Carts;
+
+extern "C" BOOL SIM_Carts_RunsGameCode(const char *code) {
+  if (code == nullptr) {
+    return FALSE;
+  }
+  const std::string list = GameCodeList();
+  if (list.empty()) {
+    return TRUE;
+  }
+  for (size_t i = 0; i + 4 <= list.size(); i += 5) {
+    if (memcmp(list.data() + i, code, 4) == 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
 
 extern "C" const char *SIM_SettingsPath(const char *fileName) {
   // A few paths are in use at once (config + its temp file...); keep a small ring

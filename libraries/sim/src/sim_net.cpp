@@ -4,6 +4,7 @@
 #include <nitro.h>
 #include <simulator/sim.h>
 #include <simulator/config/sim_config.h>
+#include <simulator/sim_carts.h>
 #include <simulator/sim_net.h>
 #include <simulator/wmsp_indicate.h>
 
@@ -1354,8 +1355,6 @@ static void DiscoveryUpdate(void)
         return;
     }
 
-    char myCode[4];
-    GameCode(myCode);
     SDL_LockMutex(net.playerListMutex);
     while(TRUE) {
         DiscoveryPacket packet;
@@ -1369,7 +1368,8 @@ static void DiscoveryUpdate(void)
         if(got < (int)sizeof(packet)) {
             break;
         }
-        if(memcmp(packet.magic, DISCOVERY_MAGIC, 8) != 0 || memcmp(packet.gameCode, myCode, 4) != 0) {
+        // Hosts running a game this build runs too (HeartGold finds SoulSilver)
+        if(memcmp(packet.magic, DISCOVERY_MAGIC, 8) != 0 || !SIM_Carts_RunsGameCode(packet.gameCode)) {
             continue;
         }
         packet.name[sizeof(packet.name) - 1] = '\0';

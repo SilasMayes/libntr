@@ -27,6 +27,12 @@ typedef struct SIM_Cart {
     BOOL hasFiles; // its ROM has been extracted
 } SIM_Cart;
 
+// The game codes (4 letters at 0x0C of a ROM header) this build runs come from libntr's
+// card_game_code option: one ("CPUE"), or several when one build runs more than one game
+// ("IPKE,IPGE": HeartGold and SoulSilver). TRUE if code (4 characters) is one of them; a build
+// that names none runs the game whose header it loaded at launch, or any.
+BOOL SIM_Carts_RunsGameCode(const char *code);
+
 // Game hook (weak default "Pokemon"): a display name for the ROM extracted in dir
 void SIM_Prj_CartName(const char *dir, char *name, int nameSize);
 

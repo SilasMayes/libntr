@@ -2240,6 +2240,21 @@ const char * SIM_GetProjectGitHash() {
   return SIM_PROJECT_GIT_HASH;
 }
 
+// The build's game and maker codes in the loaded ROM header. A header whose game code is one
+// the build runs keeps it (HeartGold or SoulSilver, from one build); any other gets the
+// build's first code.
+static void SetBuildCodes(CARDRomHeader *cardHeader) {
+#ifdef LIBNTR_CARD_GAME_CODE
+  if (!SIM_Carts_RunsGameCode((const char *)&cardHeader->game_code)) {
+    strncpy((char *)&cardHeader->game_code, LIBNTR_CARD_GAME_CODE, sizeof(u32));
+  }
+#endif
+#ifdef LIBNTR_CARD_MAKER_CODE
+  strncpy((char *)&cardHeader->maker_code, LIBNTR_CARD_MAKER_CODE, sizeof(u16));
+#endif
+  (void)cardHeader;
+}
+
 #ifdef _WIN32
 int main(int argc, char *argv[]);
 
@@ -2319,15 +2334,7 @@ int main(int argc, char *argv[]) {
   }
 
   CARDRomHeader *cardHeader = (CARDRomHeader *)(HW_ROM_HEADER_BUF);
-
-#ifdef LIBNTR_CARD_GAME_CODE
-  const char *gameCode = LIBNTR_CARD_GAME_CODE;
-  strncpy((char *)&cardHeader->game_code, gameCode, sizeof(u32));
-#endif
-#ifdef LIBNTR_CARD_MAKER_CODE
-  const char *makerCode = LIBNTR_CARD_MAKER_CODE;
-  strncpy((char *)&cardHeader->maker_code, makerCode, sizeof(u16));
-#endif
+  SetBuildCodes(cardHeader);
 
   memset((void *)HW_MAIN_MEM_SHARED, 0, 0x160);
 
@@ -2395,12 +2402,7 @@ int main(int argc, char *argv[]) {
   if (romFile != NULL) {
     fread((void *)HW_ROM_HEADER_BUF, 1, 0x160, romFile);
     fclose(romFile);
-#ifdef LIBNTR_CARD_GAME_CODE
-    strncpy((char *)&cardHeader->game_code, LIBNTR_CARD_GAME_CODE, sizeof(u32));
-#endif
-#ifdef LIBNTR_CARD_MAKER_CODE
-    strncpy((char *)&cardHeader->maker_code, LIBNTR_CARD_MAKER_CODE, sizeof(u16));
-#endif
+    SetBuildCodes(cardHeader);
   }
 
 // Init Sockets (only needed on windows)

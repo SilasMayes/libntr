@@ -109,14 +109,29 @@ ws2_32_dep = declare_dependency(dependencies: [ws2_32_lib])
 libsim_dependencies += ws2_32_dep
 endif
 
-# CARD Game code/Maker code
-if(get_option('card_game_code') != '')
-    card_game_code_define = '-DLIBNTR_CARD_GAME_CODE="' + get_option('card_game_code') + '"'
-    libsim_args += card_game_code_define
+# CARD Game code/Maker code. card_game_code may list several games ("IPKE,IPGE"): the first is
+# the default, and ROMs of any of them are accepted (LIBNTR_CARD_GAME_CODES, 4 letters each).
+card_game_codes = []
+foreach code : get_option('card_game_code').split(',')
+    code = code.strip()
+    if code != ''
+        if code.substring(0, 4) != code or code.substring(3, 4) == ''
+            error('card_game_code: "' + code + '" is not a four-letter game code')
+        endif
+        card_game_codes += code
+    endif
+endforeach
+if(card_game_codes.length() > 0)
+    libsim_args += '-DLIBNTR_CARD_GAME_CODE="' + card_game_codes[0] + '"'
+    libsim_args += '-DLIBNTR_CARD_GAME_CODES="' + ''.join(card_game_codes) + '"'
 endif
 if(get_option('card_maker_code') != '')
     card_game_code_define = '-DLIBNTR_CARD_MAKER_CODE="' + get_option('card_maker_code') + '"'
     libsim_args += card_game_code_define
+endif
+# The game's name where the ROM import screens mention it
+if(get_option('card_game_title') != '')
+    libsim_args += '-DLIBNTR_CARD_GAME_TITLE="' + get_option('card_game_title') + '"'
 endif
 
 if(get_option('tracy_enable') == true)

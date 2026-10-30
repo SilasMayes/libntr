@@ -9,20 +9,15 @@
 
 #ifdef SDK_BUILD_ANDROID
 #include "simulator/sim_android.h"
+#include "simulator/sim_carts.h"
+#include "sim_carts_internal.hpp" // LIBNTR_CARD_GAME_TITLE
 
 #include <cstdio>
 #include <cstring>
 
-// Checks the 4-letter game code in the ROM header (offset 0x0C) against the one this
+// Checks the 4-letter game code in the ROM header (offset 0x0C) against the ones this
 // port was built for, so a wrong file gets a clear message instead of a crash later.
 static bool RomMatchesGameCode(const char *path) {
-  CARDRomHeader *expected = (CARDRomHeader *)(HW_ROM_HEADER_BUF);
-  char expectedCode[5] = {0};
-  memcpy(expectedCode, &expected->game_code, 4);
-  if (expectedCode[0] == '\0') {
-    return true; // nothing to compare against
-  }
-
   FILE *file = fopen(path, "rb");
   if (file == nullptr) {
     return false;
@@ -30,7 +25,7 @@ static bool RomMatchesGameCode(const char *path) {
   char code[5] = {0};
   bool ok = fseek(file, 0x0C, SEEK_SET) == 0 && fread(code, 1, 4, file) == 4;
   fclose(file);
-  return ok && memcmp(code, expectedCode, 4) == 0;
+  return ok && SIM_Carts_RunsGameCode(code);
 }
 
 void SIM_ShowRomExtractionDialog() {
@@ -54,14 +49,14 @@ void SIM_ShowRomExtractionDialog() {
       SDL_ShowSimpleMessageBox(
           SDL_MESSAGEBOX_ERROR, "Wrong file",
           valid ? "That ROM could not be read. Please choose your own dump of "
-                  "Pokemon Platinum (USA)."
-                : "That file is not a Pokemon Platinum (USA) ROM. Please choose "
+                  LIBNTR_CARD_GAME_TITLE "."
+                : "That file is not a " LIBNTR_CARD_GAME_TITLE " ROM. Please choose "
                   "your own dump of the game.",
           nullptr);
     } else {
       SDL_ShowSimpleMessageBox(
           SDL_MESSAGEBOX_INFORMATION, "ROM required",
-          "The game files come from your own Pokemon Platinum (USA) ROM. "
+          "The game files come from your own " LIBNTR_CARD_GAME_TITLE " ROM. "
           "Choose the .nds file to continue.",
           nullptr);
     }

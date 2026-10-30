@@ -1025,7 +1025,7 @@ void BuildChain(const std::string &romPath, const std::vector<Patch> &patches, B
     return;
   }
   if (!GameCodeMatches(game.data(), game.size())) {
-    built.error = "That ROM is not this game. Choose your Pokemon Platinum (USA) ROM.";
+    built.error = "That ROM is not this game. Choose your " LIBNTR_CARD_GAME_TITLE " ROM.";
     return;
   }
   std::string info;
@@ -1322,11 +1322,10 @@ void StartFilesBuild() {
 }
 
 void ChooseFolder() {
-  char code[5];
-  ExpectedGameCode(code);
+  const std::string codes = GameCodeList();
   sWaiting = Waiting::FOLDER;
-  SIM_Files_PickFolder("Choose the folder with the ROM and patches", code[0] != '\0' ? code : nullptr, FolderPicked,
-                       nullptr);
+  SIM_Files_PickFolder("Choose the folder with the ROM and patches", !codes.empty() ? codes.c_str() : nullptr,
+                       FolderPicked, nullptr);
 }
 
 const char *PickerLabel(const char *idle) {
@@ -1423,8 +1422,8 @@ void DrawMenu() {
   }
   Note("Add another game next to the ones you have, like Drayano's Renegade Platinum. Each game keeps its own saves.");
   if (Button(PickerLabel("Choose a folder"),
-             "A folder with your Pokemon Platinum (USA) ROM and the patches for it (.xdelta). The app works out which "
-             "patches go on the ROM and which go together.",
+             "A folder with your " LIBNTR_CARD_GAME_TITLE " ROM and the patches for it (.xdelta). The app works out "
+             "which patches go on the ROM and which go together.",
              false, sWaiting == Waiting::NOTHING)) {
     ChooseFolder();
   }
@@ -1456,7 +1455,7 @@ void DrawFolder() {
 
   // The ROM
   if (plan.roms.empty()) {
-    Status("There's no Pokemon Platinum (USA) ROM in this folder.", true);
+    Status("There's no " LIBNTR_CARD_GAME_TITLE " ROM in this folder.", true);
     if (!plan.otherRoms.empty()) {
       std::string others = "Not this game: ";
       for (size_t i = 0; i < plan.otherRoms.size(); i++) {
@@ -1472,7 +1471,7 @@ void DrawFolder() {
       found += ". Choose your ROM and they're tried on it.";
       Note(found.c_str());
     }
-    if (Button(PickerLabel("Choose the ROM file"), "Your Pokemon Platinum (USA) ROM (.nds), from anywhere.", true,
+    if (Button(PickerLabel("Choose the ROM file"), "Your " LIBNTR_CARD_GAME_TITLE " ROM (.nds), from anywhere.", true,
                sWaiting == Waiting::NOTHING)) {
       sWaiting = Waiting::FOLDER_ROM;
       SIM_Files_PickToOpen("Choose the game ROM", ".nds,.srl", FolderRomPicked, nullptr);
@@ -1489,7 +1488,7 @@ void DrawFolder() {
       ImGui::PopID();
     }
   } else {
-    Card(FileName(plan.roms[0]).c_str(), "Pokemon Platinum (USA)", true);
+    Card(FileName(plan.roms[0]).c_str(), LIBNTR_CARD_GAME_TITLE, true);
   }
 
   if (!plan.roms.empty() && plan.error.empty()) {
@@ -1628,7 +1627,7 @@ void DrawFolder() {
 void DrawFiles() {
   Section("1. The game's ROM");
   if (Card(sRom.empty() ? PickerLabel("Choose the ROM") : FileName(sRom).c_str(),
-           sRom.empty() ? "Your Pokemon Platinum (USA) ROM (.nds)" : "Tap to choose another", !sRom.empty(),
+           sRom.empty() ? "Your " LIBNTR_CARD_GAME_TITLE " ROM (.nds)" : "Tap to choose another", !sRom.empty(),
            sWaiting == Waiting::NOTHING)) {
     sWaiting = Waiting::FILES_ROM;
     SIM_Files_PickToOpen("Choose the game ROM", ".nds,.srl", FilePicked, nullptr);

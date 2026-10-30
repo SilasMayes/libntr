@@ -8,13 +8,18 @@
 #include <utility>
 #include <vector>
 
+// The game's name where the screens talk about its ROM (libntr's card_game_title option)
+#ifndef LIBNTR_CARD_GAME_TITLE
+#define LIBNTR_CARD_GAME_TITLE "Pokemon Platinum (USA)"
+#endif
+
 namespace SIM::Carts {
 
 std::string BaseDir();
 std::string CartDir(const std::string &id);
 bool HasFiles(const std::string &dir);
 void ReadName(const std::string &id, SIM_Cart *cart);
-void ExpectedGameCode(char expected[5]);
+std::string GameCodeList(); // "CPUE", "IPKE,IPGE"; "" for any game (see SIM_Carts_RunsGameCode)
 bool GameCodeMatches(const u8 *header, size_t size);
 bool ReadWholeFile(const std::string &path, std::vector<u8> &out);
 bool WriteWholeFile(const std::string &path, const u8 *data, size_t size);
