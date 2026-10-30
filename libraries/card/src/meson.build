@@ -12,6 +12,13 @@ if(sdk_version_major == 4)
     )
 endif
 
+# The card IR chip of HeartGold/SoulSilver (CARD_SpiWait*), simulated
+if(build_target != 'arm')
+    libcard_srcs += files(
+        'card_spi_wait.c'
+    )
+endif
+
 if(sdk_version_major == 5)
     libcard_srcs += files(
         'card_api.c',

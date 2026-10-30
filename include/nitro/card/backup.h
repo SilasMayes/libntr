@@ -373,6 +373,10 @@ u32 CARD_GetBackupPageSize(void);
     return (CARDi_AccessStatus(CARD_REQ_WRITE_STATUS, value) >= 0);
   }
 
+  // HeartGold/SoulSilver: the status of the card's IR chip (0xAA when it is there). The rest of
+  // the CARD_SpiWait* family is in nitro/card/spi_wait.h, which nitro.h leaves out.
+  int CARD_SpiWaitGetStatus(void);
+
   #ifdef __cplusplus
 }
 #endif
