@@ -52,6 +52,9 @@ typedef enum {
 } CARDBackupType;
 
 #define CARD_BACKUP_TYPE_FLASH_64MBITS_EX (CARDBackupType)CARD_BACKUP_TYPE_DEFINE(FLASH, 23, 1)
+// HeartGold/SoulSilver: the 4 Mbit flash behind the card's IR chip (vendor 0xFF). The ports
+// treat it as FLASH_4MBITS; the vendor only changes how the DS talks to the chip.
+#define CARD_BACKUP_TYPE_FLASH_4MBITS_EX (CARDBackupType)CARD_BACKUP_TYPE_DEFINE(FLASH, 19, 0xFF)
 
 #define CARD_THREAD_PRIORITY_DEFAULT    4
 
