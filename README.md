@@ -1,4 +1,12 @@
 # libntr
+
+> **This is a fork** of [cybervisi0n/libntr](https://github.com/cybervisi0n/libntr) used by
+> [pokeplatinum-thor](https://github.com/SilasMayes/pokeplatinum-thor) and a HeartGold/SoulSilver port. The
+> `thor-android` branch adds an Android target with an OpenGL ES 3.2 renderer, the second-screen output and
+> companion panel for dual-screen devices such as the AYN Thor, and the settings UI those ports use.
+> cybervisi0n isn't involved in this fork, so please report problems with it here. The original MIT license and
+> copyright are unchanged (see [LICENSE](LICENSE)).
+
 ![logo](images/libntr.png)
 Drop-in replacement for NitroSDK that targets Nintendo DS/DSi, PC, and other platforms.
 
