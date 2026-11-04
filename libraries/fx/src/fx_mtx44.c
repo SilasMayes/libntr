@@ -133,13 +133,22 @@ void MTX_TransApply44 (const MtxFx44 *pSrc, MtxFx44 *pDst, fx32 x, fx32 y, fx32 
 
 #ifdef SDK_PORT
 void MTX_Transpose44_(const MtxFx44* pSrc, MtxFx44* pDst) {
-    //PCPORT_TODO
-    SIM_assert_always_msg("Not implemented");
+    MtxFx44 t = *pSrc; // pSrc and pDst may be the same matrix
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            pDst->m[r][c] = t.m[c][r];
+        }
+    }
 }
 
 void MTX_Scale44_(MtxFx44 * pDst, fx32 x, fx32 y, fx32 z) {
-    //PCPORT_TODO
-    SIM_assert_always_msg("Not implemented");
+    for (int i = 0; i < 16; i++) {
+        pDst->a[i] = 0;
+    }
+    pDst->_00 = x;
+    pDst->_11 = y;
+    pDst->_22 = z;
+    pDst->_33 = FX32_ONE;
 }
 #else
 asm void MTX_Transpose44_ (register const MtxFx44 *pSrc, register MtxFx44 *pDst)
@@ -226,25 +235,36 @@ void MTX_ScaleApply44 (const MtxFx44 *pSrc, MtxFx44 *pDst, fx32 x, fx32 y, fx32 
 }
 
 #ifdef SDK_PORT
+// As the SDK's asm: every element written, and the same signs as the 3x3 and 4x3 rotations
+// (these had sin and -sin swapped and left the rest of the matrix as it was)
+static void MTX_Identity44Port(MtxFx44 * pDst) {
+    for (int i = 0; i < 16; i++) {
+        pDst->a[i] = (i % 5 == 0) ? FX32_ONE : 0;
+    }
+}
+
 void MTX_RotX44_(MtxFx44 * pDst, fx32 sinVal, fx32 cosVal) {
+    MTX_Identity44Port(pDst);
     pDst->a[5] = cosVal;
+    pDst->a[6] = sinVal;
+    pDst->a[9] = -sinVal;
     pDst->a[10] = cosVal;
-    pDst->a[6] = -sinVal;
-    pDst->a[9] = sinVal;
 }
 
 void MTX_RotY44_(MtxFx44 * pDst, fx32 sinVal, fx32 cosVal) {
+    MTX_Identity44Port(pDst);
     pDst->a[0] = cosVal;
+    pDst->a[2] = -sinVal;
+    pDst->a[8] = sinVal;
     pDst->a[10] = cosVal;
-    pDst->a[2] = sinVal;
-    pDst->a[8] = -sinVal;
 }
 
 void MTX_RotZ44_(MtxFx44 * pDst, fx32 sinVal, fx32 cosVal) {
+    MTX_Identity44Port(pDst);
     pDst->a[0] = cosVal;
+    pDst->a[1] = sinVal;
+    pDst->a[4] = -sinVal;
     pDst->a[5] = cosVal;
-    pDst->a[4] = sinVal;
-    pDst->a[1] = -sinVal;
 }
 #else
 #include <nitro/code16.h>
