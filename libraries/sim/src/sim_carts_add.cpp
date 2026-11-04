@@ -300,7 +300,7 @@ bool AsVersionEdits(const std::vector<u8> &rom, const std::vector<Change> &chang
   std::vector<std::pair<u32, u32>> ranges;
   for (const std::string &path : paths) {
     u32 offset = 0, size = 0;
-    ranges.push_back(RomFileRange(rom, path, &offset, &size) ? std::make_pair(offset, size) : std::make_pair(0u, 0u));
+    ranges.push_back(RomFileRange(rom, path, &offset, &size) ? std::pair<u32, u32>(offset, size) : std::pair<u32, u32>(0, 0));
   }
   for (const Change &change : changes) {
     bool inside = false;
