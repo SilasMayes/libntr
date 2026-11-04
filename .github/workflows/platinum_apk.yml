@@ -1,9 +1,8 @@
 name: platinum_apk
 
-# Builds Pokémon Platinum's Android APK (SilasMayes/pokeplatinum, thor-android) against this
-# libntr commit. The game's libntr wrap follows thor-android's head, so a libntr change that
-# breaks it would otherwise only show up in the game's next build. Nothing is published: the
-# APK is kept as a short-lived artifact.
+# Builds Pokémon Platinum's Android APK (SilasMayes/pokeplatinum-thor, platinum-thor) against this
+# libntr commit. The game pins libntr in its wrap, so this is the check that a libntr change is safe
+# before the pin is bumped. Nothing is published: the APK is kept as a short-lived artifact.
 
 on:
   push:
@@ -12,8 +11,8 @@ on:
   workflow_dispatch:
     inputs:
       platinum_ref:
-        description: 'pokeplatinum branch, tag or commit to build'
-        default: thor-android
+        description: 'pokeplatinum-thor branch, tag or commit to build'
+        default: platinum-thor
 
 permissions:
   contents: read
@@ -38,8 +37,8 @@ jobs:
       - name: Checkout pokeplatinum
         uses: actions/checkout@v5
         with:
-          repository: SilasMayes/pokeplatinum
-          ref: ${{ inputs.platinum_ref || 'thor-android' }}
+          repository: SilasMayes/pokeplatinum-thor
+          ref: ${{ inputs.platinum_ref || 'platinum-thor' }}
           path: pokeplatinum
 
       # Meson uses a subproject directory that already exists instead of cloning the wrap
