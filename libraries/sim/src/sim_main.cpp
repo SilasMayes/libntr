@@ -1072,16 +1072,6 @@ static void DrawEngine(BOOL isSub) {
   backdropColor =
       isSub ? *(u16 *)&s_HW_DB_BG_PLTT[0] : *(u16 *)&s_HW_BG_PLTT[0];
   SIM_u16ToRGB(backdropColor, &backdropR, &backdropG, &backdropB);
-  float backdropVec[4];
-
-  backdropVec[0] = (float)backdropR / 255.0f;
-  backdropVec[1] = (float)backdropG / 255.0f;
-  backdropVec[2] = (float)backdropB / 255.0f;
-  backdropVec[3] = 1.0f;
-
-  glUniform1fv(glGetUniformLocation(g2shaderProgramID, "backdropColor"), 4,
-               backdropVec);
-
   glProgramUniform4f(g2shaderProgramID,
                      glGetUniformLocation(g2shaderProgramID, "backdropColor"),
                      (float)backdropR / 255.0f, (float)backdropG / 255.0f,
