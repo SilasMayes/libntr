@@ -142,11 +142,18 @@ void DrawDisplay() {
     int aa = config->antiAliasing >= 4 ? 2 : (config->antiAliasing >= 2 ? 1 : 0);
     const int choices = maxSamples >= 4 ? 3 : 2;
     if (Choice("Smooth 3D edges", "Anti-aliasing: smooths the jagged edges of 3D models. Costs little on this "
-               "device's kind of GPU.", &aa, kAA, choices)) {
+               "device's kind of GPU. The DS's outlines aren't drawn with it on.", &aa, kAA, choices)) {
       config->antiAliasing = (u8)(aa == 2 ? 4 : (aa == 1 ? 2 : 0));
       SIM_SetInternalResolutionAfterRender(0);
       SaveConfig();
     }
+  }
+
+  bool outlines = config->edgeMarking != 0;
+  if (Toggle("DS outlines", "The outlines the DS draws around some 3D models (edge marking), where the game "
+             "asks for them.", &outlines)) {
+    config->edgeMarking = outlines ? 1 : 0;
+    SaveConfig();
   }
 
 #ifdef SDK_BUILD_ANDROID

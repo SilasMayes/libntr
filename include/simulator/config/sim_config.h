@@ -58,6 +58,7 @@ typedef struct {
     u8 widescreen; /* The top screen as wide as the display where the game allows (SIM_SetWidescreenScene) */
     u8 texturePacks; /* Replace 3D textures with the packs' (simulator/sim_texture_packs.h) */
     u8 dumpTextures; /* Save the 3D textures the game uses as PNGs */
+    u8 edgeMarking; /* Draw the DS's 3D outlines (edge marking) where the game turns them on */
     u32 windowWidth; /* Initial width of the window. If set to 0, will use the default width for the screen layout */
     u32 windowHeight; /* Initial height of the window. If set to 0, will use default height for the screen layout */
     u8 fullScreen; /* TRUE to enable fullscreen */

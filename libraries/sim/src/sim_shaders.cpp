@@ -16,6 +16,14 @@ const char * G3FragmentShader =
 #include "shaders/g3_fragment.glsl"
 ;
 
+const char * G3EdgeVertexShader =
+#include "shaders/g3_edge_vertex.glsl"
+;
+
+const char * G3EdgeFragmentShader =
+#include "shaders/g3_edge_fragment.glsl"
+;
+
 const char * G2VertexShader =
 #include "shaders/g2_vertex.glsl"
 ;

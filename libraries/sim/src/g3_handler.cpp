@@ -1403,8 +1403,9 @@ void G3SIM_PolygonAttr(u32 data)
     u8 cullMode = (data & 0b11000000) >> 6;
     u8 depthTest = (data & 0b100000000000000) >> 14;
     u8 useFog = (data & 0b1000000000000000) >> 15;
+    u8 polygonId = (data >> 24) & 0x3F; // edge marking's polygon ID
 
-    if(cullMode != s_curPolygonAttr.cullMode || polygonMode != s_curPolygonAttr.polygonMode || alpha != s_curPolygonAttr.alphaInt || depthTest != s_curPolygonAttr.depthTest || useFog != s_curPolygonAttr.fogEnable)
+    if(cullMode != s_curPolygonAttr.cullMode || polygonMode != s_curPolygonAttr.polygonMode || alpha != s_curPolygonAttr.alphaInt || depthTest != s_curPolygonAttr.depthTest || useFog != s_curPolygonAttr.fogEnable || polygonId != s_curPolygonAttr.polygonId)
     {
         // Flush the vertex buffer
         G3SIM_FlushArray();
@@ -1425,6 +1426,7 @@ void G3SIM_PolygonAttr(u32 data)
     s_curPolygonAttr.alphaInt = alpha;
     s_curPolygonAttr.depthTest = depthTest;
     s_curPolygonAttr.fogEnable = useFog;
+    s_curPolygonAttr.polygonId = polygonId;
 
     if(alpha == 31){
         s_curPolygonAttr.alpha = 1.0f;
