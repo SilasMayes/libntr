@@ -149,18 +149,9 @@ extern REGType32v s_reg_G3_VEC_TEST;
 //ioreg_G3X
 extern REGType16v s_reg_G3X_DISP3DCNT;
 extern REGType16v s_reg_G3X_RDLINES_COUNT;
-extern REGType32v s_reg_G3X_EDGE_COLOR_0;
-extern REGType16v s_reg_G3X_EDGE_COLOR_0_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_0_H;
-extern REGType32v s_reg_G3X_EDGE_COLOR_1;
-extern REGType16v s_reg_G3X_EDGE_COLOR_1_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_1_H;
-extern REGType32v s_reg_G3X_EDGE_COLOR_2;
-extern REGType16v s_reg_G3X_EDGE_COLOR_2_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_2_H;
-extern REGType32v s_reg_G3X_EDGE_COLOR_3;
-extern REGType16v s_reg_G3X_EDGE_COLOR_3_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_3_H;
+// The eight edge colours are one block, as on the DS: G3X_SetEdgeColorTable copies all 16 bytes
+// from EDGE_COLOR_0_L's address
+extern REGType32v s_reg_G3X_EDGE_COLOR[4];
 extern REGType16v s_reg_G3X_ALPHA_TEST_REF;
 extern REGType32v s_reg_G3X_CLEAR_COLOR;
 extern REGType16v s_reg_G3X_CLEAR_DEPTH;

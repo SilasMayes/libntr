@@ -334,6 +334,19 @@ static GLuint g2TextureId;
 static GLuint g3RenderTextureId;
 static GLuint dummyScreenTextureId;
 
+// Edge marking (G3EdgeMarking): the 3D framebuffer's second colour output keeps each opaque
+// pixel's polygon ID and depth; a pass over the finished frame draws the edges into
+// g3RenderTextureId through a framebuffer of its own
+static GLuint g3AttrTextureId;
+static GLuint g3EdgeFrameBuffer;
+static GLuint g3EdgeProgramID;
+static GLuint g3EdgeVertexArray;
+static GLuint g3EdgeSourceTextureId; // with anti-aliasing: the 3D viewport before the pass
+static GLuint g3EdgeSourceFrameBuffer;
+static const int kEdgeAttrTexUnit = 15;
+static const int kEdgeSourceTexUnit = 14;
+static GLint sG3Viewport[4]; // the 3D screen's part of the 3D framebuffer
+
 GLint s_bgTexUnits[] = {0, 1, 2, 3};
 static GLint s_objTexUnits[] = {4, 5, 6, 7, 8};
 static GLint s_objWindowTexUnit = 9;
@@ -768,6 +781,19 @@ void SIM_SetInternalResolution(int internalRes) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g3RenderTextureId, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g3RenderBufferId);
   }
+  // Edge marking's attributes, the second colour output, and its copy of the 3D screen: without
+  // MSAA only (the multisampled framebuffer has the colour alone, and edge marking is off)
+  {
+    const bool edges = sSamples == 0;
+    glBindTexture(GL_TEXTURE_2D, g3AttrTextureId);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, edges ? width : 1, edges ? height : 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_2D, g3EdgeSourceTextureId);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, edges ? width : 1, edges ? height / 2 : 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
+    static const GLenum kDrawBuffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, edges ? g3AttrTextureId : 0, 0);
+    glDrawBuffers(edges ? 2 : 1, kDrawBuffers);
+  }
   // A new size starts empty
   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -962,6 +988,16 @@ void *SIM_RenderInit(void *arg) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                          g3RenderTextureId, 0);
+  // Edge marking's attributes and copy of the 3D screen, read texel by texel
+  for (GLuint *id : {&g3AttrTextureId, &g3EdgeSourceTextureId}) {
+    glGenTextures(1, id);
+    glBindTexture(GL_TEXTURE_2D, *id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  }
+  glBindTexture(GL_TEXTURE_2D, g3RenderTextureId);
   glGenRenderbuffers(1, &g3RenderBufferId);
   glBindRenderbuffer(GL_RENDERBUFFER, g3RenderBufferId);
   FindAntiAliasing();
@@ -972,6 +1008,14 @@ void *SIM_RenderInit(void *arg) {
   if (fboStatus != GL_FRAMEBUFFER_COMPLETE) {
     printf("Framebuffer error: %d\n", fboStatus);
   }
+
+  // Edge marking's pass draws into the 3D colour alone; with anti-aliasing it reads a copy
+  glGenFramebuffers(1, &g3EdgeFrameBuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, g3EdgeFrameBuffer);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g3RenderTextureId, 0);
+  glGenFramebuffers(1, &g3EdgeSourceFrameBuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, g3EdgeSourceFrameBuffer);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g3EdgeSourceTextureId, 0);
 
   // Unbind all that stuff
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -997,6 +1041,23 @@ void *SIM_RenderInit(void *arg) {
   CompileVertexShader(myVertexShader, g3VertexSrcPtr);
   CompileFragmentShader(myFragmentShader, g3FragmentSrcPtr);
   LinkShader(g3shaderProgramID, myVertexShader, myFragmentShader);
+
+  // Edge marking's pass
+  {
+    std::string edgeVertexSrc = SIM::PrepareShaderSource(SIM::G3EdgeVertexShader);
+    std::string edgeFragmentSrc = SIM::PrepareShaderSource(SIM::G3EdgeFragmentShader);
+    const char *edgeVertexSrcPtr = edgeVertexSrc.c_str();
+    const char *edgeFragmentSrcPtr = edgeFragmentSrc.c_str();
+    GLuint edgeVertexShader;
+    GLuint edgeFragmentShader;
+    g3EdgeProgramID = glCreateProgram();
+    CompileVertexShader(edgeVertexShader, edgeVertexSrcPtr);
+    CompileFragmentShader(edgeFragmentShader, edgeFragmentSrcPtr);
+    LinkShader(g3EdgeProgramID, edgeVertexShader, edgeFragmentShader);
+    glProgramUniform1i(g3EdgeProgramID, glGetUniformLocation(g3EdgeProgramID, "attrTexture"), kEdgeAttrTexUnit);
+    glProgramUniform1i(g3EdgeProgramID, glGetUniformLocation(g3EdgeProgramID, "colorTexture"), kEdgeSourceTexUnit);
+    glGenVertexArrays(1, &g3EdgeVertexArray);
+  }
 
   // Setup G2 Shader Program
   g2shaderProgramID = glCreateProgram();
@@ -1072,16 +1133,6 @@ static void DrawEngine(BOOL isSub) {
   backdropColor =
       isSub ? *(u16 *)&s_HW_DB_BG_PLTT[0] : *(u16 *)&s_HW_BG_PLTT[0];
   SIM_u16ToRGB(backdropColor, &backdropR, &backdropG, &backdropB);
-  float backdropVec[4];
-
-  backdropVec[0] = (float)backdropR / 255.0f;
-  backdropVec[1] = (float)backdropG / 255.0f;
-  backdropVec[2] = (float)backdropB / 255.0f;
-  backdropVec[3] = 1.0f;
-
-  glUniform1fv(glGetUniformLocation(g2shaderProgramID, "backdropColor"), 4,
-               backdropVec);
-
   glProgramUniform4f(g2shaderProgramID,
                      glGetUniformLocation(g2shaderProgramID, "backdropColor"),
                      (float)backdropR / 255.0f, (float)backdropG / 255.0f,
@@ -1434,6 +1485,94 @@ static void HandleJoystickKeyUp(int aKey) {
   }
 }
 
+// The DS's edge marking (DISP3DCNT bit 5) over the 3D drawn since the last vblank: see
+// g3_edge_fragment.glsl. The 3D is drawn straight into the buffer shown, so this runs at the
+// vblank where the frame's polygons first show, which for a game that swaps at the second of two
+// vblanks (HeartGold and SoulSilver at 30 Hz) is the one before the swap; nothing new drawn,
+// nothing to do (and a frame shown at two vblanks isn't outlined twice). Not with MSAA (no
+// attribute output there). With anti-aliasing (bit 4) the pass reads a copy of the 3D screen
+// made first.
+static void G3EdgeMarking() {
+  static u32 sLastDrawSerial = 0;
+  const u32 drawSerial = G3SIM_DrawSerial();
+  const bool drawn = drawSerial != sLastDrawSerial;
+  sLastDrawSerial = drawSerial;
+  static bool sWasOn = false;
+  const bool on = ((s_reg_G3X_DISP3DCNT >> 5) & 1) != 0;
+  if (on != sWasOn) {
+    sWasOn = on;
+    printf("3D edge marking: %s%s\n", on ? "on" : "off", on && sSamples != 0 ? " (not drawn with anti-aliasing)" : "");
+  }
+  if (!on || !drawn || !s_SIM_config.edgeMarking || sSamples != 0 ||
+      sG3Viewport[2] <= 0 || sG3Viewport[3] <= 0) {
+    return;
+  }
+
+  GLfloat colors[8 * 3];
+  const REGType16v *table = (const REGType16v *)REG_EDGE_COLOR_0_L_ADDR;
+  for (int i = 0; i < 8; i++) {
+    const u16 rgb = table[i];
+    colors[i * 3 + 0] = (float)(rgb & 0x1F) / 31.0f;
+    colors[i * 3 + 1] = (float)((rgb >> 5) & 0x1F) / 31.0f;
+    colors[i * 3 + 2] = (float)((rgb >> 10) & 0x1F) / 31.0f;
+  }
+  const bool antiAlias = ((s_reg_G3X_DISP3DCNT >> 4) & 1) != 0;
+  static GLint sLocColors = -2, sLocRect, sLocStep, sLocClearId, sLocAntiAlias;
+  if (sLocColors == -2) {
+    sLocColors = glGetUniformLocation(g3EdgeProgramID, "edgeColors");
+    sLocRect = glGetUniformLocation(g3EdgeProgramID, "viewportRect");
+    sLocStep = glGetUniformLocation(g3EdgeProgramID, "pixelStep");
+    sLocClearId = glGetUniformLocation(g3EdgeProgramID, "clearPolygonId");
+    sLocAntiAlias = glGetUniformLocation(g3EdgeProgramID, "antiAlias");
+  }
+  glProgramUniform3fv(g3EdgeProgramID, sLocColors, 8, colors);
+  glProgramUniform4i(g3EdgeProgramID, sLocRect, sG3Viewport[0], sG3Viewport[1], sG3Viewport[0] + sG3Viewport[2],
+                     sG3Viewport[1] + sG3Viewport[3]);
+  glProgramUniform1i(g3EdgeProgramID, sLocStep, sScale);
+  glProgramUniform1i(g3EdgeProgramID, sLocClearId, (int)((s_reg_G3X_CLEAR_COLOR >> 24) & 0x3F));
+  glProgramUniform1i(g3EdgeProgramID, sLocAntiAlias, antiAlias ? 1 : 0);
+
+  GLint viewport[4];
+  GLint vertexArray;
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vertexArray);
+  const GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
+  const GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
+
+  if (antiAlias) {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g3FrameBuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g3EdgeSourceFrameBuffer);
+    glBlitFramebuffer(sG3Viewport[0], sG3Viewport[1], sG3Viewport[0] + sG3Viewport[2], sG3Viewport[1] + sG3Viewport[3],
+                      0, 0, sG3Viewport[2], sG3Viewport[3], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, g3EdgeFrameBuffer);
+  glViewport(sG3Viewport[0], sG3Viewport[1], sG3Viewport[2], sG3Viewport[3]);
+  glActiveTexture(GL_TEXTURE0 + kEdgeAttrTexUnit);
+  glBindTexture(GL_TEXTURE_2D, g3AttrTextureId);
+  glActiveTexture(GL_TEXTURE0 + kEdgeSourceTexUnit);
+  glBindTexture(GL_TEXTURE_2D, g3EdgeSourceTextureId);
+  glActiveTexture(GL_TEXTURE0);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_CULL_FACE);
+  // The shader's colour replaces the pixel's; without anti-aliasing the 3D layer's alpha stays
+  glBlendFuncSeparate(GL_ONE, GL_ZERO, antiAlias ? GL_ONE : GL_ZERO, antiAlias ? GL_ZERO : GL_ONE);
+  glUseProgram(g3EdgeProgramID);
+  glBindVertexArray(g3EdgeVertexArray);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glBindVertexArray(vertexArray);
+  glUseProgram(g3shaderProgramID);
+  if (cullFace) {
+    glEnable(GL_CULL_FACE);
+  }
+  if (depthTest) {
+    glEnable(GL_DEPTH_TEST);
+  }
+  glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+  glBindFramebuffer(GL_FRAMEBUFFER, g3FrameBuffer);
+}
+
 void *SIM_Render(void *arg) {
 
   SDL_Event Event;
@@ -1461,6 +1600,8 @@ void *SIM_Render(void *arg) {
 
   // Draw the translucent 3D stuff
   G3SIM_DrawItems();
+
+  G3EdgeMarking();
 
   GpuTimerEnd(); // the 3D scene's GPU time (started after the last frame)
   GpuTimersCollect();
@@ -2186,11 +2327,11 @@ void *SIM_Render(void *arg) {
   }
 
   // Setup 3D Viewport
-  if (s_reg_GX_POWCNT >> 15) {
-    glViewport(0, SIM_NDS_SCREEN_HEIGHT * sScale, sWide3dWidth * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
-  } else {
-    glViewport(0, 0, sWide3dWidth * sScale, SIM_NDS_SCREEN_HEIGHT * sScale);
-  }
+  sG3Viewport[0] = 0;
+  sG3Viewport[1] = (s_reg_GX_POWCNT >> 15) ? SIM_NDS_SCREEN_HEIGHT * sScale : 0;
+  sG3Viewport[2] = sWide3dWidth * sScale;
+  sG3Viewport[3] = SIM_NDS_SCREEN_HEIGHT * sScale;
+  glViewport(sG3Viewport[0], sG3Viewport[1], sG3Viewport[2], sG3Viewport[3]);
 
   // Activate 3D shader
   glUseProgram(g3shaderProgramID);

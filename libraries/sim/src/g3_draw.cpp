@@ -165,12 +165,18 @@ void G3SIM_AddVtx(G3SIM_Vertex_t * vtx)
 
 static u64 sG3SubmitNs = 0;
 static u32 sG3Draws = 0;
+static u32 sG3DrawSerial = 0;
 
 u32 G3SIM_TakeDrawCount()
 {
 	u32 draws = sG3Draws;
 	sG3Draws = 0;
 	return draws;
+}
+
+u32 G3SIM_DrawSerial()
+{
+	return sG3DrawSerial;
 }
 
 static u64 G3SIM_NowNs()
@@ -196,6 +202,7 @@ void G3SIM_DrawArray()
 		G3SIM_UploadVerts(s_G3DrawVerts, s_G3DrawCurVertIdx);
 		glDrawArrays(GL_TRIANGLES,0,s_G3DrawCurVertIdx);
 		sG3Draws++;
+		sG3DrawSerial++;
 	}
 	return;
 }
@@ -455,6 +462,7 @@ static void G3SIM_FlushArrayInner()
 
 		s_G3DrawItemListCount++;
 	} else {
+		glProgramUniform1f(g3shaderProgramID, G3SIM_Uniform("polygonId"), (float)s_curPolygonAttr.polygonId);
 		G3SIM_DrawArray();
 	}
 
@@ -498,12 +506,15 @@ void G3SIM_DrawItems()
 		// Set the polygon mode in the shader
 		GLint polygonModeLoc = G3SIM_Uniform("polygonMode");
 		glProgramUniform1i(g3shaderProgramID, polygonModeLoc, item->polygonAttr.polygonMode);
+		// Edge marking: the polygon ID its opaque texels give (A3I5, A5I3 at full alpha)
+		glProgramUniform1f(g3shaderProgramID, G3SIM_Uniform("polygonId"), (float)item->polygonAttr.polygonId);
 
 		glBindVertexArray(s_G3DrawVertexArray);
 		glBindBuffer(GL_ARRAY_BUFFER, s_G3DrawVertexBuffer);
 		G3SIM_UploadVerts(item->verts, item->vertsCount);
 		glDrawArrays(GL_TRIANGLES,0, item->vertsCount);
 		sG3Draws++;
+		sG3DrawSerial++;
 
 		free(item->verts);
 	}

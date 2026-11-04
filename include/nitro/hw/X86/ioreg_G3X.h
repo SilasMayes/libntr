@@ -18,18 +18,9 @@ extern "C" {
  */
 extern REGType16v s_reg_G3X_DISP3DCNT;
 extern REGType16v s_reg_G3X_RDLINES_COUNT;
-extern REGType32v s_reg_G3X_EDGE_COLOR_0;
-extern REGType16v s_reg_G3X_EDGE_COLOR_0_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_0_H;
-extern REGType32v s_reg_G3X_EDGE_COLOR_1;
-extern REGType16v s_reg_G3X_EDGE_COLOR_1_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_1_H;
-extern REGType32v s_reg_G3X_EDGE_COLOR_2;
-extern REGType16v s_reg_G3X_EDGE_COLOR_2_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_2_H;
-extern REGType32v s_reg_G3X_EDGE_COLOR_3;
-extern REGType16v s_reg_G3X_EDGE_COLOR_3_L;
-extern REGType16v s_reg_G3X_EDGE_COLOR_3_H;
+// The eight edge colours are one block, as on the DS: G3X_SetEdgeColorTable copies all 16 bytes
+// from EDGE_COLOR_0_L's address
+extern REGType32v s_reg_G3X_EDGE_COLOR[4];
 extern REGType16v s_reg_G3X_ALPHA_TEST_REF;
 extern REGType32v s_reg_G3X_CLEAR_COLOR;
 extern REGType16v s_reg_G3X_CLEAR_DEPTH;
@@ -162,73 +153,73 @@ extern REGType32v s_reg_G3X_VECMTX_RESULT_8;
 /* EDGE_COLOR_0 */
 
 #define REG_EDGE_COLOR_0_OFFSET                            0x330
-#define REG_EDGE_COLOR_0_ADDR                              (&s_reg_G3X_EDGE_COLOR_0)
+#define REG_EDGE_COLOR_0_ADDR                              (&s_reg_G3X_EDGE_COLOR[0])
 #define reg_G3X_EDGE_COLOR_0                               (*( REGType32v *) REG_EDGE_COLOR_0_ADDR)
 
 /* EDGE_COLOR_0_L */
 
 #define REG_EDGE_COLOR_0_L_OFFSET                          0x330
-#define REG_EDGE_COLOR_0_L_ADDR                            (&s_reg_G3X_EDGE_COLOR_0_L)
+#define REG_EDGE_COLOR_0_L_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[0])
 #define reg_G3X_EDGE_COLOR_0_L                             (*( REGType16v *) REG_EDGE_COLOR_0_L_ADDR)
 
 /* EDGE_COLOR_0_H */
 
 #define REG_EDGE_COLOR_0_H_OFFSET                          0x332
-#define REG_EDGE_COLOR_0_H_ADDR                            (&s_reg_G3X_EDGE_COLOR_0_H)
+#define REG_EDGE_COLOR_0_H_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[0] + 1)
 #define reg_G3X_EDGE_COLOR_0_H                             (*( REGType16v *) REG_EDGE_COLOR_0_H_ADDR)
 
 /* EDGE_COLOR_1 */
 
 #define REG_EDGE_COLOR_1_OFFSET                            0x334
-#define REG_EDGE_COLOR_1_ADDR                              (&s_reg_G3X_EDGE_COLOR_1)
+#define REG_EDGE_COLOR_1_ADDR                              (&s_reg_G3X_EDGE_COLOR[1])
 #define reg_G3X_EDGE_COLOR_1                               (*( REGType32v *) REG_EDGE_COLOR_1_ADDR)
 
 /* EDGE_COLOR_1_L */
 
 #define REG_EDGE_COLOR_1_L_OFFSET                          0x334
-#define REG_EDGE_COLOR_1_L_ADDR                            (&s_reg_G3X_EDGE_COLOR_1_L)
+#define REG_EDGE_COLOR_1_L_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[1])
 #define reg_G3X_EDGE_COLOR_1_L                             (*( REGType16v *) REG_EDGE_COLOR_1_L_ADDR)
 
 /* EDGE_COLOR_1_H */
 
 #define REG_EDGE_COLOR_1_H_OFFSET                          0x336
-#define REG_EDGE_COLOR_1_H_ADDR                            (&s_reg_G3X_EDGE_COLOR_1_H)
+#define REG_EDGE_COLOR_1_H_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[1] + 1)
 #define reg_G3X_EDGE_COLOR_1_H                             (*( REGType16v *) REG_EDGE_COLOR_1_H_ADDR)
 
 /* EDGE_COLOR_2 */
 
 #define REG_EDGE_COLOR_2_OFFSET                            0x338
-#define REG_EDGE_COLOR_2_ADDR                              (&s_reg_G3X_EDGE_COLOR_2)
+#define REG_EDGE_COLOR_2_ADDR                              (&s_reg_G3X_EDGE_COLOR[2])
 #define reg_G3X_EDGE_COLOR_2                               (*( REGType32v *) REG_EDGE_COLOR_2_ADDR)
 
 /* EDGE_COLOR_2_L */
 
 #define REG_EDGE_COLOR_2_L_OFFSET                          0x338
-#define REG_EDGE_COLOR_2_L_ADDR                            (&s_reg_G3X_EDGE_COLOR_2_L)
+#define REG_EDGE_COLOR_2_L_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[2])
 #define reg_G3X_EDGE_COLOR_2_L                             (*( REGType16v *) REG_EDGE_COLOR_2_L_ADDR)
 
 /* EDGE_COLOR_2_H */
 
 #define REG_EDGE_COLOR_2_H_OFFSET                          0x33a
-#define REG_EDGE_COLOR_2_H_ADDR                            (&s_reg_G3X_EDGE_COLOR_2_H)
+#define REG_EDGE_COLOR_2_H_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[2] + 1)
 #define reg_G3X_EDGE_COLOR_2_H                             (*( REGType16v *) REG_EDGE_COLOR_2_H_ADDR)
 
 /* EDGE_COLOR_3 */
 
 #define REG_EDGE_COLOR_3_OFFSET                            0x33c
-#define REG_EDGE_COLOR_3_ADDR                              (&s_reg_G3X_EDGE_COLOR_3)
+#define REG_EDGE_COLOR_3_ADDR                              (&s_reg_G3X_EDGE_COLOR[3])
 #define reg_G3X_EDGE_COLOR_3                               (*( REGType32v *) REG_EDGE_COLOR_3_ADDR)
 
 /* EDGE_COLOR_3_L */
 
 #define REG_EDGE_COLOR_3_L_OFFSET                          0x33c
-#define REG_EDGE_COLOR_3_L_ADDR                            (&s_reg_G3X_EDGE_COLOR_3_L)
+#define REG_EDGE_COLOR_3_L_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[3])
 #define reg_G3X_EDGE_COLOR_3_L                             (*( REGType16v *) REG_EDGE_COLOR_3_L_ADDR)
 
 /* EDGE_COLOR_3_H */
 
 #define REG_EDGE_COLOR_3_H_OFFSET                          0x33e
-#define REG_EDGE_COLOR_3_H_ADDR                            (&s_reg_G3X_EDGE_COLOR_3_H)
+#define REG_EDGE_COLOR_3_H_ADDR                            ((REGType16v *)&s_reg_G3X_EDGE_COLOR[3] + 1)
 #define reg_G3X_EDGE_COLOR_3_H                             (*( REGType16v *) REG_EDGE_COLOR_3_H_ADDR)
 
 /* ALPHA_TEST_REF */
