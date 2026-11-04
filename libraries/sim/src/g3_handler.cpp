@@ -66,6 +66,7 @@ u8 s_g3DiffuseColor[3] = {0};
 u8 s_g3AmbientColor[3] = {0};
 u8 s_g3SpecularColor[3] = {0};
 u8 s_g3EmissionColor[3] = {0};
+static u8 s_g3UseShininessTable; // SPE_EMI bit 15 (no table is captured: the level is used as it is)
 G3SIM_PolygonAttr_t s_curPolygonAttr;
 
 static u8 s_swapBuffersCalledThisFrame;
@@ -843,6 +844,18 @@ void G3SIM_Identity()
     return;
 }
 
+// A VecFx10 component (NORMAL, LIGHT_VECTOR): 10-bit two's complement, 9 fraction bits. These
+// were read into a u8 (bits 8 and 9, the sign, lost) as sign and magnitude: negative components
+// came out positive and large ones wrapped (0.75 read as 0.25), so lighting was wrong.
+static float G3SIM_DecodeVecFx10(u32 data, int shift)
+{
+    s32 v = (s32)((data >> shift) & 0x3FF);
+    if (v & 0x200) {
+        v -= 0x400;
+    }
+    return (float)v / 512.0f;
+}
+
 void G3SIM_LightColor(u32 data)
 {
     u8 lightRed = (data & 0b11111);
@@ -858,29 +871,21 @@ void G3SIM_LightColor(u32 data)
 
 void G3SIM_LightVector(u32 data)
 {
-    u8 lightVecX = (data & 0b1111111111);
-    u8 lightVecXSign = (lightVecX & 0b1000000000) >> 9;
-    lightVecX = lightVecX & 0b111111111;
-    u8 lightVecY = (data & 0b11111111110000000000) >> 10;
-    u8 lightVecYSign = (lightVecY & 0b1000000000) >> 9;
-    lightVecY = lightVecY & 0b111111111;
-    u8 lightVecZ = (data & 0b111111111100000000000000000000) >> 20;
-    u8 lightVecZSign = (lightVecZ & 0b1000000000) >> 9;
-    lightVecZ = lightVecZ & 0b111111111;
     u8 lightNum = (data & 0b11000000000000000000000000000000) >> 30;
 
-    // Should get us a number from -1 to 1
-    s_G3LightVector[lightNum][0] = (float)lightVecX / 511.0f;
-    if(lightVecXSign) {
-        s_G3LightVector[lightNum][0] = s_G3LightVector[lightNum][0] * -1.0f;
-    }
-    s_G3LightVector[lightNum][1] = (float)lightVecY / 511.0f;
-    if(lightVecYSign) {
-        s_G3LightVector[lightNum][1] = s_G3LightVector[lightNum][1] * -1.0f;
-    }
-    s_G3LightVector[lightNum][2] = (float)lightVecZ / 511.0f;
-    if(lightVecZSign) {
-        s_G3LightVector[lightNum][2] = s_G3LightVector[lightNum][2] * -1.0f;
+    // Same format as a normal: 10-bit two's complement components, 9 fraction bits
+    float in[3];
+    in[0] = G3SIM_DecodeVecFx10(data, 0);
+    in[1] = G3SIM_DecodeVecFx10(data, 10);
+    in[2] = G3SIM_DecodeVecFx10(data, 20);
+
+    // The DS multiplies the light vector by the directional matrix of the moment (NNS sends the
+    // lights right after loading the camera), and normals by the one current when they come;
+    // multiplying the light by each normal's matrix lit models in their own space instead
+    for (int i = 0; i < 3; i++) {
+        s_G3LightVector[lightNum][i] = (in[0] * FX_FX32_TO_F32(currentVectorMatrix.nums[0][i]))
+                                     + (in[1] * FX_FX32_TO_F32(currentVectorMatrix.nums[1][i]))
+                                     + (in[2] * FX_FX32_TO_F32(currentVectorMatrix.nums[2][i]));
     }
 }
 
@@ -1306,30 +1311,11 @@ void G3SIM_MtxTranslate(fx32* trans)
 
 void G3SIM_Normal(u32 data)
 {
-    u8 vecX = (data & 0b1111111111);
-    u8 vecXSign = (vecX & 0b1000000000) >> 9;
-    vecX = vecX & 0b111111111;
-    u8 vecY = (data & 0b11111111110000000000) >> 10;
-    u8 vecYSign = (vecY & 0b1000000000) >> 9;
-    vecY = vecY & 0b111111111;
-    u8 vecZ = (data & 0b111111111100000000000000000000) >> 20;
-    u8 vecZSign = (vecZ & 0b1000000000) >> 9;
-    vecZ = vecZ & 0b111111111;
-
     float normalVectorIn[3];
-    // Should get us a number from -1 to 1
-    normalVectorIn[0] = (float)vecX / 511.0f;
-    if(vecXSign) {
-        normalVectorIn[0] = normalVectorIn[0] * -1.0f;
-    }
-    normalVectorIn[1] = (float)vecY / 511.0f;
-    if(vecYSign) {
-        normalVectorIn[1] = normalVectorIn[1] * -1.0f;
-    }
-    normalVectorIn[2] = (float)vecZ / 511.0f;
-    if(vecZSign) {
-        normalVectorIn[2] = normalVectorIn[2] * -1.0f;
-    }
+    // Three 10-bit two's complement components with 9 fraction bits (-1.0 to 511/512)
+    normalVectorIn[0] = G3SIM_DecodeVecFx10(data, 0);
+    normalVectorIn[1] = G3SIM_DecodeVecFx10(data, 10);
+    normalVectorIn[2] = G3SIM_DecodeVecFx10(data, 20);
 
     //Multiply by the vector matrix
     float normalVector[3];
@@ -1356,46 +1342,40 @@ void G3SIM_Normal(u32 data)
     for(int lightNum=0; lightNum<4; lightNum++) {
         if((s_curPolygonAttr.lightFlag >> lightNum) & 1)
         {
-            // Light is enabled
+            // Light is enabled (its vector is already in view space, see G3SIM_LightVector)
+            const float *lightVector = s_G3LightVector[lightNum];
 
-            //Multiply light vector by vector matrix
-            float lightVector[3];
-            lightVector[0] = (s_G3LightVector[lightNum][0] * FX_FX32_TO_F32(currentVectorMatrix.nums[0][0]))
-                           + (s_G3LightVector[lightNum][1] * FX_FX32_TO_F32(currentVectorMatrix.nums[1][0]))
-                           + (s_G3LightVector[lightNum][2] * FX_FX32_TO_F32(currentVectorMatrix.nums[2][0]));
-
-            lightVector[1] = (s_G3LightVector[lightNum][0] * FX_FX32_TO_F32(currentVectorMatrix.nums[0][1]))
-                           + (s_G3LightVector[lightNum][1] * FX_FX32_TO_F32(currentVectorMatrix.nums[1][1]))
-                           + (s_G3LightVector[lightNum][2] * FX_FX32_TO_F32(currentVectorMatrix.nums[2][1]));
-
-            lightVector[2] = (s_G3LightVector[lightNum][0] * FX_FX32_TO_F32(currentVectorMatrix.nums[0][2]))
-                           + (s_G3LightVector[lightNum][1] * FX_FX32_TO_F32(currentVectorMatrix.nums[1][2]))
-                           + (s_G3LightVector[lightNum][2] * FX_FX32_TO_F32(currentVectorMatrix.nums[2][2]));
-
-            //Calculate Diffuse level
-            float diffuseLevel = (lightVector[0] * normalVector[0])
-                               + (lightVector[1] * normalVector[1])
-                               + (lightVector[2] * normalVector[2]);
-
-            diffuseLevel = diffuseLevel * -1.0f;
+            float diffuseLevel = -((lightVector[0] * normalVector[0])
+                                 + (lightVector[1] * normalVector[1])
+                                 + (lightVector[2] * normalVector[2]));
             if(diffuseLevel < 0.0f) {
                 diffuseLevel = 0.0f;
+            } else if(diffuseLevel > 1.0f) {
+                diffuseLevel = 1.0f;
             }
 
-            //Specular color
-            color[0] = color[0] + (((float)s_g3SpecularColor[0] / 255.0f) * ((float)s_G3LightColor[lightNum][0] / 255.0f)); // * ShininessLevel TODO
-            color[1] = color[1] + (((float)s_g3SpecularColor[1] / 255.0f) * ((float)s_G3LightColor[lightNum][1] / 255.0f)); // * ShininessLevel TODO
-            color[2] = color[2] + (((float)s_g3SpecularColor[2] / 255.0f) * ((float)s_G3LightColor[lightNum][2] / 255.0f)); // * ShininessLevel TODO
+            // Specular: the half vector between the light and the line of sight (0, 0, -1), not
+            // normalised, and 2 d^2 - 1 of its dot product d with the normal (hardware-tested in
+            // melonDS). A shininess table would map that level; none is captured here
+            float halfDot = -((lightVector[0] * 0.5f * normalVector[0])
+                            + (lightVector[1] * 0.5f * normalVector[1])
+                            + ((lightVector[2] - 1.0f) * 0.5f * normalVector[2]));
+            if(halfDot < 0.0f) {
+                halfDot = 0.0f;
+            }
+            float shininessLevel = 2.0f * halfDot * halfDot - 1.0f;
+            if(shininessLevel < 0.0f) {
+                shininessLevel = 0.0f;
+            } else if(shininessLevel > 1.0f) {
+                shininessLevel = 1.0f;
+            }
 
-            //Diffuse color
-            color[0] = color[0] + (((float)s_g3DiffuseColor[0] / 255.0f) * ((float)s_G3LightColor[lightNum][0] / 255.0f) * diffuseLevel); // * DiffuseLevel TODO
-            color[1] = color[1] + (((float)s_g3DiffuseColor[1] / 255.0f) * ((float)s_G3LightColor[lightNum][1] / 255.0f) * diffuseLevel); // * DiffuseLevel TODO
-            color[2] = color[2] + (((float)s_g3DiffuseColor[2] / 255.0f) * ((float)s_G3LightColor[lightNum][2] / 255.0f) * diffuseLevel); // * DiffuseLevel TODO
-
-            //Ambient color
-            color[0] = color[0] + (((float)s_g3AmbientColor[0] / 255.0f) * ((float)s_G3LightColor[lightNum][0] / 255.0f));
-            color[1] = color[1] + (((float)s_g3AmbientColor[1] / 255.0f) * ((float)s_G3LightColor[lightNum][1] / 255.0f));
-            color[2] = color[2] + (((float)s_g3AmbientColor[2] / 255.0f) * ((float)s_G3LightColor[lightNum][2] / 255.0f));
+            for(int c = 0; c < 3; c++) {
+                float light = (float)s_G3LightColor[lightNum][c] / 255.0f;
+                color[c] += ((float)s_g3SpecularColor[c] / 255.0f) * light * shininessLevel;
+                color[c] += ((float)s_g3DiffuseColor[c] / 255.0f) * light * diffuseLevel;
+                color[c] += ((float)s_g3AmbientColor[c] / 255.0f) * light;
+            }
         }
     }
 
@@ -1479,16 +1459,12 @@ void G3SIM_SpecEmi(u32 data)
     u8 specularRed = (data & 0b11111);
     u8 specularGreen = (data & 0b1111100000) >> 5;
     u8 specularBlue = (data & 0b111110000000000) >> 10;
-    u8 setVtxColor = (data & 0b1000000000000000) >> 15;
+    u8 useShininessTable = (data & 0b1000000000000000) >> 15; // SPE_EMI's bit 15
     u8 emissionRed = (data & 0b111110000000000000000) >> 16;
     u8 emissionGreen = (data & 0b11111000000000000000000000) >> 21;
     u8 emissionBlue = (data & 0b1111100000000000000000000000000) >> 26;
 
-    if(setVtxColor) {
-        s_g3CurColor[0] = specularRed << 3;
-        s_g3CurColor[1] = specularGreen << 3;
-        s_g3CurColor[2] = specularBlue << 3;
-    }
+    s_g3UseShininessTable = useShininessTable;
     s_g3SpecularColor[0] = specularRed << 3;
     s_g3SpecularColor[1] = specularGreen << 3;
     s_g3SpecularColor[2] = specularBlue << 3;
