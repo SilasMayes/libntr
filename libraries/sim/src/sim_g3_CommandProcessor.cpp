@@ -1,6 +1,7 @@
 #include "simulator/sim_g3_CommandProcessor.hpp"
 
 #include "simulator/drawmsg.h"
+#include "simulator/sim.h"
 #include "simulator/g3_handler.h"
 #include "simulator/g3_draw.h"
 
@@ -652,5 +653,6 @@ void HandleCommandMessage(draw_msg_t *msg) {
 
 // C APIs
 void SIM_HandleG3Command(draw_msg_t * msg) {
+    SIM_Begin3DCommand();
     SIM::G3::HandleCommandMessage(msg);
 }
