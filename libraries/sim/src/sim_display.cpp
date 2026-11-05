@@ -77,33 +77,209 @@ SDL_Window *sSecondWindow = nullptr;
 bool sUserClosedWindow = false;
 int sMainSwapInterval = 1;
 
-void UpdateSecondWindow() {
+// Window placement changes are written to the config file once the window has stopped
+// moving for a moment (a drag sends a stream of move events).
+bool sPlacementDirty = false;
+Uint32 sPlacementChangedAt = 0;
+
+void MarkPlacementDirty() {
+  sPlacementDirty = true;
+  sPlacementChangedAt = SDL_GetTicks();
+}
+
+bool IsFullScreen(SDL_Window *window) {
+  return window != nullptr &&
+         (SDL_GetWindowFlags(window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
+}
+
+// TRUE if a window at (x, y, w, h) would show enough of itself (its top edge, where the
+// title bar is) on one of the connected displays to be grabbed and moved. A position saved
+// on a monitor that is gone falls back to the default.
+bool PlacementVisible(int x, int y, int w, int h) {
+  if (x == SIM_CONFIG_WINDOW_POS_UNSET || y == SIM_CONFIG_WINDOW_POS_UNSET) {
+    return false;
+  }
+  const int displays = SDL_GetNumVideoDisplays();
+  for (int i = 0; i < displays; i++) {
+    SDL_Rect bounds;
+    if (SDL_GetDisplayBounds(i, &bounds) != 0) {
+      continue;
+    }
+    const int left = x > bounds.x ? x : bounds.x;
+    const int right = (x + w) < (bounds.x + bounds.w) ? (x + w) : (bounds.x + bounds.w);
+    const bool topInside = y >= bounds.y - 8 && y < bounds.y + bounds.h - 32;
+    if (topInside && right - left >= 96) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void SetFullScreen(SDL_Window *window, bool on) {
+  if (window == nullptr || IsFullScreen(window) == on) {
+    return;
+  }
+  SDL_SetWindowFullscreen(window, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+}
+
+// The top window just went full screen: a bottom window on the same monitor would end up
+// behind it, so with a second monitor it moves to the middle of that one
+void MoveBottomOffTopsDisplay() {
+  if (sSecondWindow == nullptr || sMainWindow == nullptr || IsFullScreen(sSecondWindow)) {
+    return;
+  }
+  const int mainDisplay = SDL_GetWindowDisplayIndex(sMainWindow);
+  const int displays = SDL_GetNumVideoDisplays();
+  if (mainDisplay < 0 || displays < 2 || SDL_GetWindowDisplayIndex(sSecondWindow) != mainDisplay) {
+    return;
+  }
+  for (int i = 0; i < displays; i++) {
+    SDL_Rect bounds;
+    if (i == mainDisplay || SDL_GetDisplayUsableBounds(i, &bounds) != 0) {
+      continue;
+    }
+    int w, h;
+    SDL_GetWindowSize(sSecondWindow, &w, &h);
+    SDL_SetWindowPosition(sSecondWindow, bounds.x + (bounds.w - w) / 2, bounds.y + (bounds.h - h) / 2);
+    return;
+  }
+}
+
+void DefaultSecondSize(int *width, int *height) {
+  // With a companion UI, mimic the AYN Thor's lower panel (1080x1240) at half size
+  const bool companion = SIM_Prj_CompanionEnabled() != FALSE;
+  *width = companion ? 540 : SIM_NDS_SCREEN_WIDTH * 2;
+  *height = companion ? 620 : SIM_NDS_SCREEN_HEIGHT * 2;
+}
+
+// With the bottom screen in its own window, the top window only needs one screen's shape
+// (4:3); without it, the stacked layout needs two screens' height. Only a window in the
+// other layout's shape is changed, so a size the user picked stays.
+void FitMainWindow(bool topOnly) {
   const SIM_config_type *config = SIM_GetConfigPtr();
+  if (sMainWindow == nullptr || IsFullScreen(sMainWindow) ||
+      (SDL_GetWindowFlags(sMainWindow) & SDL_WINDOW_MAXIMIZED) != 0 ||
+      config->screenLayout != SIM_CONFIG_SCREEN_LAYOUT_VERTICAL) {
+    return;
+  }
+  int w, h;
+  SDL_GetWindowSize(sMainWindow, &w, &h);
+  if (topOnly && h * 4 > w * 5) {
+    SDL_SetWindowSize(sMainWindow, w, w * 3 / 4); // was two screens tall
+  } else if (!topOnly && h * 5 < w * 4) {
+    SDL_SetWindowSize(sMainWindow, w, w * 3 / 2); // was one screen's shape
+  }
+}
+
+void UpdateSecondWindow() {
+  SIM_config_type *config = SIM_GetConfigPtr();
   const bool wanted = config->secondaryScreen && !sUserClosedWindow;
 
   if (wanted && sSecondWindow == nullptr && sMainWindow != nullptr) {
-    int mainX, mainY, mainW, mainH;
-    SDL_GetWindowPosition(sMainWindow, &mainX, &mainY);
-    SDL_GetWindowSize(sMainWindow, &mainW, &mainH);
-    // With a companion UI, mimic the AYN Thor's lower panel (1080x1240) at half size
-    const bool companion = SIM_Prj_CompanionEnabled() != FALSE;
-    const int width = companion ? 540 : SIM_NDS_SCREEN_WIDTH * 2;
-    const int height = companion ? 620 : SIM_NDS_SCREEN_HEIGHT * 2;
+    int width, height;
+    DefaultSecondSize(&width, &height);
+    if (config->bottomWindowWidth >= 128 && config->bottomWindowHeight >= 96) {
+      width = (int)config->bottomWindowWidth;
+      height = (int)config->bottomWindowHeight;
+    }
+    int x, y;
+    const bool saved = PlacementVisible(config->bottomWindowX, config->bottomWindowY, width, height);
+    if (saved) {
+      x = config->bottomWindowX;
+      y = config->bottomWindowY;
+    } else {
+      // Beside the main window (on the same display when it is full screen)
+      int mainX, mainY, mainW, mainH;
+      SDL_GetWindowPosition(sMainWindow, &mainX, &mainY);
+      SDL_GetWindowSize(sMainWindow, &mainW, &mainH);
+      x = IsFullScreen(sMainWindow) ? mainX + 32 : mainX + mainW + 16;
+      y = IsFullScreen(sMainWindow) ? mainY + 32 : mainY;
+      if (!PlacementVisible(x, y, width, height)) {
+        x = SDL_WINDOWPOS_CENTERED;
+        y = SDL_WINDOWPOS_CENTERED;
+      }
+    }
     sSecondWindow = SDL_CreateWindow(
-        "Bottom Screen", mainX + mainW + 16, mainY, width, height,
+        "Bottom Screen", x, y, width, height,
         SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (sSecondWindow == nullptr) {
       printf("Could not create the bottom screen window: %s\n", SDL_GetError());
       sUserClosedWindow = true; // don't retry every frame
+    } else {
+      if (config->bottomFullScreen) {
+        SetFullScreen(sSecondWindow, true);
+      } else if (!saved && IsFullScreen(sMainWindow)) {
+        MoveBottomOffTopsDisplay();
+      }
+      FitMainWindow(true);
+      // Back to the top window, so the keys keep going to the game window
+      SDL_RaiseWindow(sMainWindow);
     }
   } else if (!config->secondaryScreen && sSecondWindow != nullptr) {
     SDL_DestroyWindow(sSecondWindow);
     sSecondWindow = nullptr;
+    FitMainWindow(false);
   }
 
   if (!config->secondaryScreen) {
     // Turning the option back on reopens a window the user closed
     sUserClosedWindow = false;
+  }
+}
+
+// Remembers where a window is while it isn't full screen (a full-screen window reports its
+// display's corner, which isn't where it should come back to).
+void NotePlacement(SDL_Window *window) {
+  if (window == nullptr || IsFullScreen(window) ||
+      (SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_MAXIMIZED)) != 0) {
+    return;
+  }
+  SIM_config_type *config = SIM_GetConfigPtr();
+  int x, y, w, h;
+  SDL_GetWindowPosition(window, &x, &y);
+  SDL_GetWindowSize(window, &w, &h);
+#ifndef _WIN32
+  // SDL reports where the window's contents are, but on X11 a new window is placed by its
+  // frame: store the frame's corner, or the window would creep down by its title bar on
+  // every start (Windows places new windows by their contents, so nothing to do there)
+  int top = 0;
+  int left = 0;
+  if (SDL_GetWindowBordersSize(window, &top, &left, nullptr, nullptr) == 0) {
+    x -= left;
+    y -= top;
+  }
+#endif
+  if (window == sSecondWindow) {
+    config->bottomWindowX = x;
+    config->bottomWindowY = y;
+    config->bottomWindowWidth = (u32)w;
+    config->bottomWindowHeight = (u32)h;
+  } else if (window == sMainWindow) {
+    config->windowX = x;
+    config->windowY = y;
+    config->windowWidth = (u32)w;
+    config->windowHeight = (u32)h;
+  } else {
+    return;
+  }
+  MarkPlacementDirty();
+}
+
+// The bottom window stays above a full-screen top window that covers the same display, or
+// it would disappear behind it.
+void UpdateStacking() {
+  static bool sOnTop = false;
+  bool onTop = false;
+  if (sSecondWindow != nullptr && sMainWindow != nullptr && IsFullScreen(sMainWindow) &&
+      !IsFullScreen(sSecondWindow)) {
+    onTop = SDL_GetWindowDisplayIndex(sMainWindow) == SDL_GetWindowDisplayIndex(sSecondWindow);
+  }
+  if (onTop != sOnTop && sSecondWindow != nullptr) {
+    SDL_SetWindowAlwaysOnTop(sSecondWindow, onTop ? SDL_TRUE : SDL_FALSE);
+    sOnTop = onTop;
+  }
+  if (sSecondWindow == nullptr) {
+    sOnTop = false;
   }
 }
 
@@ -231,6 +407,11 @@ extern "C" BOOL SIM_Display_ProcessEvent(const SDL_Event *event) {
   (void)event;
   return FALSE;
 #else
+  if (event->type == SDL_WINDOWEVENT && sMainWindow != nullptr &&
+      event->window.windowID == SDL_GetWindowID(sMainWindow) &&
+      (event->window.event == SDL_WINDOWEVENT_MOVED || event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED)) {
+    NotePlacement(sMainWindow); // and let the main loop see it too
+  }
   if (sSecondWindow == nullptr) {
     return FALSE;
   }
@@ -247,6 +428,9 @@ extern "C" BOOL SIM_Display_ProcessEvent(const SDL_Event *event) {
       sSecondWindow = nullptr;
       sUserClosedWindow = true;
       sTouchDown = false;
+    } else if (event->window.event == SDL_WINDOWEVENT_MOVED ||
+               event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+      NotePlacement(sSecondWindow);
     }
     return TRUE;
   case SDL_MOUSEBUTTONDOWN:
@@ -307,6 +491,83 @@ extern "C" BOOL SIM_Display_GetSecondaryTouch(int *x, int *y) {
   }
 #endif
   return sTouchDown ? TRUE : FALSE;
+}
+
+extern "C" void SIM_Display_MainWindowPosition(int width, int height, int *x, int *y) {
+#ifdef SDK_BUILD_ANDROID
+  (void)width;
+  (void)height;
+  *x = 0;
+  *y = 0;
+#else
+  const SIM_config_type *config = SIM_GetConfigPtr();
+  if (PlacementVisible(config->windowX, config->windowY, width, height)) {
+    *x = config->windowX;
+    *y = config->windowY;
+  } else {
+    *x = SDL_WINDOWPOS_CENTERED;
+    *y = SDL_WINDOWPOS_CENTERED;
+  }
+#endif
+}
+
+extern "C" BOOL SIM_Display_IsFullScreen(BOOL bottom) {
+#ifdef SDK_BUILD_ANDROID
+  (void)bottom;
+  return TRUE;
+#else
+  return IsFullScreen(bottom ? sSecondWindow : sMainWindow) ? TRUE : FALSE;
+#endif
+}
+
+extern "C" void SIM_Display_SetFullScreen(BOOL bottom, BOOL on) {
+#ifdef SDK_BUILD_ANDROID
+  (void)bottom;
+  (void)on;
+#else
+  SIM_config_type *config = SIM_GetConfigPtr();
+  if (bottom) {
+    config->bottomFullScreen = on ? TRUE : FALSE;
+    SetFullScreen(sSecondWindow, on != FALSE);
+  } else {
+    config->fullScreen = on ? TRUE : FALSE;
+    SetFullScreen(sMainWindow, on != FALSE);
+    if (on) {
+      MoveBottomOffTopsDisplay();
+    }
+  }
+  SIM_Config_SaveConfigFile(config);
+#endif
+}
+
+extern "C" void SIM_Display_ToggleFullScreen(void) {
+#ifndef SDK_BUILD_ANDROID
+  // The window being typed into: F11 / Alt+Enter on the bottom window switches that one
+  SDL_Window *focus = SDL_GetKeyboardFocus();
+  const BOOL bottom = (focus != nullptr && focus == sSecondWindow) ? TRUE : FALSE;
+  SIM_Display_SetFullScreen(bottom, SIM_Display_IsFullScreen(bottom) ? FALSE : TRUE);
+#endif
+}
+
+extern "C" void SIM_Display_Tick(void) {
+#ifndef SDK_BUILD_ANDROID
+  UpdateStacking();
+  if (sPlacementDirty && SDL_GetTicks() - sPlacementChangedAt > 1000) {
+    sPlacementDirty = false;
+    SIM_Config_SaveConfigFile(SIM_GetConfigPtr());
+  }
+#endif
+}
+
+extern "C" void SIM_Display_SavePlacement(void) {
+#ifndef SDK_BUILD_ANDROID
+  NotePlacement(sMainWindow);
+  NotePlacement(sSecondWindow);
+  if (sPlacementDirty) {
+    sPlacementDirty = false;
+    SIM_Config_SaveConfigFile(SIM_GetConfigPtr());
+  }
+#endif
 }
 
 #ifdef SDK_BUILD_ANDROID

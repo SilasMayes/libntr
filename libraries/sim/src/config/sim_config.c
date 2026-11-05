@@ -80,6 +80,27 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "FullScreen")) {
         config->fullScreen = StringToBool(value);
     }
+    if(MATCH("General", "WindowX")) {
+        config->windowX = atoi(value);
+    }
+    if(MATCH("General", "WindowY")) {
+        config->windowY = atoi(value);
+    }
+    if(MATCH("General", "BottomWindowX")) {
+        config->bottomWindowX = atoi(value);
+    }
+    if(MATCH("General", "BottomWindowY")) {
+        config->bottomWindowY = atoi(value);
+    }
+    if(MATCH("General", "BottomWindowWidth")) {
+        config->bottomWindowWidth = atoi(value);
+    }
+    if(MATCH("General", "BottomWindowHeight")) {
+        config->bottomWindowHeight = atoi(value);
+    }
+    if(MATCH("General", "BottomFullScreen")) {
+        config->bottomFullScreen = StringToBool(value);
+    }
     if(MATCH("General", "MasterVolume")) {
         config->masterVolume = atoi(value);
         if(config->masterVolume > 127) {
@@ -400,6 +421,13 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->windowWidth = 0;
 #endif
     aConfig->fullScreen = FALSE;
+    aConfig->windowX = SIM_CONFIG_WINDOW_POS_UNSET;
+    aConfig->windowY = SIM_CONFIG_WINDOW_POS_UNSET;
+    aConfig->bottomWindowX = SIM_CONFIG_WINDOW_POS_UNSET;
+    aConfig->bottomWindowY = SIM_CONFIG_WINDOW_POS_UNSET;
+    aConfig->bottomWindowWidth = 0;
+    aConfig->bottomWindowHeight = 0;
+    aConfig->bottomFullScreen = FALSE;
 #ifdef SDK_BUILD_ANDROID
     // Landscape phones: side by side fits best when there is no second display
     aConfig->screenLayout = SIM_CONFIG_SCREEN_LAYOUT_HORIZONTAL;
@@ -512,6 +540,19 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "WindowHeight=%d\n", aConfig->windowHeight);
     fprintf(configFile, "WindowWidth=%d\n", aConfig->windowWidth);
     fprintf(configFile, "FullScreen=%s\n", BoolToString(aConfig->fullScreen));
+#ifndef SDK_BUILD_ANDROID
+    if (aConfig->windowX != SIM_CONFIG_WINDOW_POS_UNSET && aConfig->windowY != SIM_CONFIG_WINDOW_POS_UNSET) {
+        fprintf(configFile, "WindowX=%d\n", (int)aConfig->windowX);
+        fprintf(configFile, "WindowY=%d\n", (int)aConfig->windowY);
+    }
+    if (aConfig->bottomWindowX != SIM_CONFIG_WINDOW_POS_UNSET && aConfig->bottomWindowY != SIM_CONFIG_WINDOW_POS_UNSET) {
+        fprintf(configFile, "BottomWindowX=%d\n", (int)aConfig->bottomWindowX);
+        fprintf(configFile, "BottomWindowY=%d\n", (int)aConfig->bottomWindowY);
+    }
+    fprintf(configFile, "BottomWindowWidth=%d\n", (int)aConfig->bottomWindowWidth);
+    fprintf(configFile, "BottomWindowHeight=%d\n", (int)aConfig->bottomWindowHeight);
+    fprintf(configFile, "BottomFullScreen=%s\n", BoolToString(aConfig->bottomFullScreen));
+#endif
     fprintf(configFile, "MasterVolume=%d\n", aConfig->masterVolume);
 
     const char * screenLayoutString = ScreenLayoutTypeToString(aConfig->screenLayout);

@@ -48,6 +48,8 @@ typedef struct {
     int fastForwardJoyKey;
 } SIM_config_pad_settings_type;
 
+#define SIM_CONFIG_WINDOW_POS_UNSET (-2147483647 - 1)
+
 typedef struct {
     char serverIp[16]; /* IP of the last server connected to through Net */
 } SIM_config_net_settings_type;
@@ -62,6 +64,13 @@ typedef struct {
     u32 windowWidth; /* Initial width of the window. If set to 0, will use the default width for the screen layout */
     u32 windowHeight; /* Initial height of the window. If set to 0, will use default height for the screen layout */
     u8 fullScreen; /* TRUE to enable fullscreen */
+    s32 windowX; /* Main window position on the desktop (SIM_CONFIG_WINDOW_POS_UNSET: let the system pick) */
+    s32 windowY;
+    s32 bottomWindowX; /* Desktop: the bottom screen's own window (secondaryScreen), last position and size */
+    s32 bottomWindowY;
+    u32 bottomWindowWidth; /* 0: the default size */
+    u32 bottomWindowHeight;
+    u8 bottomFullScreen; /* Desktop: the bottom screen's window covers its display */
     u8 masterVolume; /* Master sound volume (0-127) */
     SIM_config_screen_layout_type screenLayout; /* DS screen layout */
     BOOL swapScreens; /* Swap screen positions */

@@ -3,6 +3,7 @@
 
 #include "simulator/config/sim_config.h"
 #include "simulator/sim.h"
+#include "simulator/sim_display.h"
 #include "simulator/sim_files.h"
 #include "simulator/sim_gui.hpp"
 #include "simulator/sim_texture_packs.h"
@@ -183,7 +184,7 @@ void DrawDisplay() {
   }
 
   bool wide = config->widescreen != FALSE;
-  if (Toggle("Widescreen (experimental)", "Where the game allows it (the overworld in clear weather, and battles), "
+  if (Toggle("Widescreen (experimental)", "Where the game allows it (the overworld in clear weather), "
              "the scene fills the whole top display instead of a 4:3 box. Text boxes and menus stay 4:3 in the "
              "middle. Needs the bottom screen on its own display.", &wide)) {
     config->widescreen = wide ? TRUE : FALSE;
@@ -191,11 +192,23 @@ void DrawDisplay() {
   }
 
 #ifndef SDK_BUILD_ANDROID
+  // Each window covers the monitor it's on; drag a window to another monitor first.
   bool fullScreen = config->fullScreen != 0;
-  if (Toggle("Full screen", nullptr, &fullScreen)) {
-    config->fullScreen = fullScreen ? 1 : 0;
-    SDL_SetWindowFullscreen(SIM_GetSDLWindow(), fullScreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-    SaveConfig();
+  if (Toggle(second ? "Top screen full screen" : "Full screen",
+             second ? "Fills the monitor the top screen's window is on. F11 or Alt+Enter switches the window "
+                      "you're in."
+                    : "Fills the monitor the window is on. F11 or Alt+Enter also switches it.",
+             &fullScreen)) {
+    SIM_Display_SetFullScreen(FALSE, fullScreen ? TRUE : FALSE);
+  }
+  if (second) {
+    bool bottomFull = config->bottomFullScreen != 0;
+    if (Toggle("Bottom screen full screen",
+               "Fills the monitor the bottom screen's window is on. Drag its window to another monitor first; "
+               "it opens there again next time.",
+               &bottomFull)) {
+      SIM_Display_SetFullScreen(TRUE, bottomFull ? TRUE : FALSE);
+    }
   }
 #endif
 

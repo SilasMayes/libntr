@@ -54,6 +54,26 @@ typedef struct SIM_TouchEvent {
     int y;
 } SIM_TouchEvent;
 
+// Where the main window goes when it's created: the saved position if that's still on a
+// connected display, else centred. Needs SDL's video subsystem.
+void SIM_Display_MainWindowPosition(int width, int height, int *x, int *y);
+
+// Desktop full screen for the top (main) window or the bottom screen's own window. The
+// window keeps the display it's on; leaving full screen puts it back where it was. The
+// choice is saved in the config (FullScreen / BottomFullScreen). Android: always full screen.
+BOOL SIM_Display_IsFullScreen(BOOL bottom);
+void SIM_Display_SetFullScreen(BOOL bottom, BOOL on);
+
+// F11 / Alt+Enter: full screen on or off for the window that has the keyboard focus.
+void SIM_Display_ToggleFullScreen(void);
+
+// Once per frame: keeps the bottom window above a full-screen top window on the same
+// display, and writes moved/resized window positions to the config after a moment.
+void SIM_Display_Tick(void);
+
+// Writes the windows' current positions and sizes to the config now (on quit).
+void SIM_Display_SavePlacement(void);
+
 // Pops the oldest pending touch event. FALSE when there is none.
 BOOL SIM_Display_PollSecondaryTouch(SIM_TouchEvent *event);
 

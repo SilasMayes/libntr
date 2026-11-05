@@ -890,8 +890,14 @@ void *SIM_RenderInit(void *arg) {
   windowFlags |= SDL_WINDOW_FULLSCREEN;
 #endif
 
+  int windowX = 100;
+  int windowY = 100;
+#ifndef SDK_BUILD_ANDROID
+  // Back where it was last time, if that display is still there
+  SIM_Display_MainWindowPosition((int)windowWidth, (int)windowHeight, &windowX, &windowY);
+#endif
   window = SDL_CreateWindow(
-      windowTitle.c_str(), 100, 100, windowWidth, windowHeight,
+      windowTitle.c_str(), windowX, windowY, windowWidth, windowHeight,
       windowFlags);
   context = SDL_GL_CreateContext(window);
   SDL_GL_SetSwapInterval(s_SIM_config.vsyncInterval);
@@ -1763,6 +1769,7 @@ void *SIM_Render(void *arg) {
       s_SIM_SDLJoystick = SDL_JoystickOpen(0);
     }
 
+    SIM_Display_Tick();
     while (SDL_PollEvent(&Event)) {
       if (SIM_Display_ProcessEvent(&Event)) {
         // Input/close event for the secondary output window
@@ -1783,6 +1790,7 @@ void *SIM_Render(void *arg) {
         // Ctrl+C / SIGTERM / logging out on desktop; the activity finishing on Android
         SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_QUIT);
 #ifndef SDK_BUILD_ANDROID
+        SIM_Display_SavePlacement();
         exit(0);
 #endif
       }
@@ -1791,10 +1799,22 @@ void *SIM_Render(void *arg) {
         switch (Event.window.event) {
         case SDL_WINDOWEVENT_CLOSE:
           SIM_Prj_OnLifecycleEvent(SIM_LIFECYCLE_QUIT);
+          SIM_Display_SavePlacement();
           exit(0);
           break;
         }
       }
+#ifndef SDK_BUILD_ANDROID
+      if (Event.type == SDL_KEYDOWN &&
+          (Event.key.keysym.sym == SDLK_F11 ||
+           (Event.key.keysym.sym == SDLK_RETURN && (Event.key.keysym.mod & KMOD_ALT) != 0))) {
+        // Full screen on/off for the window in focus (Alt+Enter is not Start)
+        if (!Event.key.repeat) {
+          SIM_Display_ToggleFullScreen();
+        }
+        continue;
+      }
+#endif
       if (Event.type == SDL_KEYDOWN) {
         int keyRead = Event.key.keysym.sym;
         if (keyRead == s_SIM_config.padSettings.aKey) {
