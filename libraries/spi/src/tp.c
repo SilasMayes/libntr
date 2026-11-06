@@ -4,6 +4,7 @@
 #include <nitro/spi/common/config.h>
 
 #ifdef SDK_PORT
+#include <simulator/sim.h>
 extern TPData s_tpData;
 #endif
 
@@ -42,6 +43,9 @@ static struct {
 
 static inline BOOL TPi_SamplingNow (void)
 {
+#ifdef SDK_PORT
+    return TRUE; // no ARM7: TPi_PortReply answers once the request is recorded
+#endif
     if (0 > PXI_SendWordByFifo(PXI_FIFO_TAG_TOUCHPANEL,
                                SPI_PXI_START_BIT
                                | SPI_PXI_END_BIT
@@ -55,6 +59,11 @@ static inline BOOL TPi_SamplingNow (void)
 
 static inline BOOL TPi_AutoSamplingOn (u16 vCount, u8 frequency)
 {
+#ifdef SDK_PORT
+    (void)vCount;
+    (void)frequency;
+    return TRUE; // no ARM7: TPi_PortReply answers once the request is recorded
+#endif
     if (0 > PXI_SendWordByFifo(PXI_FIFO_TAG_TOUCHPANEL,
                                SPI_PXI_START_BIT
                                | (0 << SPI_PXI_INDEX_SHIFT)
@@ -72,6 +81,9 @@ static inline BOOL TPi_AutoSamplingOn (u16 vCount, u8 frequency)
 
 static inline BOOL TPi_AutoSamplingOff (void)
 {
+#ifdef SDK_PORT
+    return TRUE; // no ARM7: TPi_PortReply answers once the request is recorded
+#endif
     if (0 > PXI_SendWordByFifo(PXI_FIFO_TAG_TOUCHPANEL,
                                SPI_PXI_START_BIT
                                | SPI_PXI_END_BIT
@@ -85,6 +97,10 @@ static inline BOOL TPi_AutoSamplingOff (void)
 
 static inline BOOL TPi_SetupStability (u16 range)
 {
+#ifdef SDK_PORT
+    (void)range;
+    return TRUE; // no ARM7: TPi_PortReply answers once the request is recorded
+#endif
     if (0 > PXI_SendWordByFifo(PXI_FIFO_TAG_TOUCHPANEL,
                                SPI_PXI_START_BIT
                                | SPI_PXI_END_BIT
@@ -98,6 +114,10 @@ static inline BOOL TPi_SetupStability (u16 range)
 
 static inline void TPi_CopyTpFromSystemWork (TPData * result)
 {
+#ifdef SDK_PORT
+    *result = s_tpData; // the sim's touch state, updated once per frame
+    return;
+#endif
     SPITpData spi_tp;
 
     spi_tp.halfs[0] = *(u16 *)(&(OS_GetSystemWork()->touch_panel[0]));
@@ -201,6 +221,42 @@ common:
     }
 }
 
+#ifdef SDK_PORT
+// The port has no ARM7 to answer the touch panel's PXI commands. TPi_PortReply gives the answer the
+// ARM7's SPI code would (SPIi_ReturnResult: success), through the same callback, right after the
+// request is recorded; TPi_PortAutoSample stands in for its auto-sampling V-alarms: once per frame
+// (SIM_PostRenderVBlank) it stores `frequence` samples of the frame's touch state, as the DS stores
+// one per alarm, so TP_GetLatestIndexInAuto moves and the games' auto-sampling buffers fill (the
+// HGSS/Platinum Trainer Card signature, the Hall of Fame and code entry read touch this way).
+static void TPi_PortReply (u32 command)
+{
+    u32 result = SPI_PXI_RESULT_SUCCESS;
+
+    // As tp_arm7.c: auto-sampling switched on twice, or off when it isn't on, is refused
+    if ((command == SPI_PXI_COMMAND_TP_AUTO_ON && tpState.state == TP_STATE_AUTO_SAMPLING)
+        || (command == SPI_PXI_COMMAND_TP_AUTO_OFF && tpState.state != TP_STATE_AUTO_SAMPLING)) {
+        result = SPI_PXI_RESULT_ILLEGAL_STATUS;
+    }
+    TPi_TpCallback(PXI_FIFO_TAG_TOUCHPANEL,
+                   SPI_PXI_START_BIT | SPI_PXI_END_BIT | (0 << SPI_PXI_INDEX_SHIFT)
+                   | (((command & 0xff) | 0x80) << 8) | result, FALSE);
+}
+
+static void TPi_PortAutoSample (void)
+{
+    u32 i;
+
+    if (tpState.state != TP_STATE_AUTO_SAMPLING || tpState.samplingBufs == NULL) {
+        return;
+    }
+    for (i = 0; i < tpState.frequence; i++) {
+        TPi_TpCallback(PXI_FIFO_TAG_TOUCHPANEL,
+                       SPI_PXI_START_BIT | SPI_PXI_END_BIT
+                       | ((SPI_PXI_COMMAND_TP_AUTO_SAMPLING | 0x80) << 8) | i, FALSE);
+    }
+}
+#endif
+
 void TP_Init (void)
 {
     static u16 initial = FALSE;
@@ -227,6 +283,9 @@ void TP_Init (void)
     #endif
 
     PXI_SetFifoRecvCallback(PXI_FIFO_TAG_TOUCHPANEL, TPi_TpCallback);
+#ifdef SDK_PORT
+    SIMi_TouchVBlankHook = TPi_PortAutoSample;
+#endif
 }
 
 BOOL TP_GetUserInfo (TPCalibrateParam * calibrate)
@@ -351,6 +410,9 @@ void TP_RequestSamplingAsync (void)
     tpState.err_flg &= ~TP_REQUEST_COMMAND_FLAG_SAMPLING;
 
     (void)OS_RestoreInterrupts(enabled);
+#ifdef SDK_PORT
+    TPi_PortReply(SPI_PXI_COMMAND_TP_SAMPLING);
+#endif
 }
 
 u32 TP_WaitRawResult (TPData * result)
@@ -423,6 +485,9 @@ void TP_RequestAutoSamplingStartAsync (u16 vcount, u16 frequence, TPData samplin
     tpState.err_flg &= ~TP_REQUEST_COMMAND_FLAG_AUTO_ON;
 
     (void)OS_RestoreInterrupts(enabled);
+#ifdef SDK_PORT
+    TPi_PortReply(SPI_PXI_COMMAND_TP_AUTO_ON);
+#endif
 }
 
 void TP_RequestAutoSamplingStopAsync (void)
@@ -444,6 +509,9 @@ void TP_RequestAutoSamplingStopAsync (void)
     tpState.err_flg &= ~TP_REQUEST_COMMAND_FLAG_AUTO_OFF;
 
     (void)OS_RestoreInterrupts(enabled);
+#ifdef SDK_PORT
+    TPi_PortReply(SPI_PXI_COMMAND_TP_AUTO_OFF);
+#endif
 }
 
 void TP_RequestSetStabilityAsync (u8 retry, u16 range)
@@ -466,6 +534,9 @@ void TP_RequestSetStabilityAsync (u8 retry, u16 range)
     tpState.err_flg &= ~TP_REQUEST_COMMAND_FLAG_SET_STABILITY;
 
     (void)OS_RestoreInterrupts(enabled);
+#ifdef SDK_PORT
+    TPi_PortReply(SPI_PXI_COMMAND_TP_SETUP_STABILITY);
+#endif
 }
 
 void TP_GetLatestRawPointInAuto (TPData * result)

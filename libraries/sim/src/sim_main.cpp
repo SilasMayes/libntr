@@ -2397,7 +2397,12 @@ void SIM_Begin3DCommand() {
   }
 }
 
+void (*SIMi_TouchVBlankHook)(void) = NULL;
+
 void SIM_PostRenderVBlank() {
+  if (SIMi_TouchVBlankHook != NULL) {
+    SIMi_TouchVBlankHook(); // the frame's touch state is read (SIM_Render) by now
+  }
   if (G3SIM_SwapBuffersCalledThisFrame()) {
     s3DClearPending = true;
     G3SIM_ResetSwapBuffersCall();

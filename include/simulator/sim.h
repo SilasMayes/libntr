@@ -56,6 +56,9 @@ extern "C" {
 void SIM_PreRenderVBlank(void);
 void SIM_PostRenderVBlank(void);
 void SIM_Begin3DCommand(void); // clears the 3D after a swap once the next frame starts
+// Called once per frame after the input is read (TP_Init sets it: the touch panel's auto-sampling,
+// which the ARM7 does on the DS)
+extern void (*SIMi_TouchVBlankHook)(void);
 void SIM_procPXI(void);
 void SIM_procPXI7to9(void);
 int SIM_procPxiThread( void * arg );
