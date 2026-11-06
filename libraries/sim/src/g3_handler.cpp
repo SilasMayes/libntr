@@ -309,26 +309,19 @@ static void calculateClipMatrix()
         }
     }
 
-    //Update reg_G3X_CLIPMTX_RESULT
-    MtxFx44 fxMtx;
-    fxMtx._00 = currentClipMatrix.nums[0][0];
-    fxMtx._01 = currentClipMatrix.nums[0][1];
-    fxMtx._02 = currentClipMatrix.nums[0][2];
-    fxMtx._03 = currentClipMatrix.nums[0][3];
-    fxMtx._10 = currentClipMatrix.nums[1][0];
-    fxMtx._11 = currentClipMatrix.nums[1][1];
-    fxMtx._12 = currentClipMatrix.nums[1][2];
-    fxMtx._13 = currentClipMatrix.nums[1][3];
-    fxMtx._20 = currentClipMatrix.nums[2][0];
-    fxMtx._21 = currentClipMatrix.nums[2][1];
-    fxMtx._22 = currentClipMatrix.nums[2][2];
-    fxMtx._23 = currentClipMatrix.nums[2][3];
-    fxMtx._30 = currentClipMatrix.nums[3][0];
-    fxMtx._31 = currentClipMatrix.nums[3][1];
-    fxMtx._32 = currentClipMatrix.nums[3][2];
-    fxMtx._33 = currentClipMatrix.nums[3][3];
-
-    memcpy( (void*)&s_reg_G3X_CLIPMTX_RESULT_0, &fxMtx, sizeof( MtxFx44 ) );
+    // CLIPMTX_RESULT and VECMTX_RESULT, read back by G3X_GetClipMtx (64 bytes) and
+    // G3X_GetVectorMtx (36 bytes): each is one array, so the copies stay inside it (as separate
+    // globals an optimized GCC build laid them out backwards and the copy ran over GXSTAT)
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            s_reg_G3X_CLIPMTX_RESULT[i * 4 + j] = currentClipMatrix.nums[i][j];
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            s_reg_G3X_VECMTX_RESULT[i * 3 + j] = currentVectorMatrix.nums[i][j];
+        }
+    }
 
 
     return;

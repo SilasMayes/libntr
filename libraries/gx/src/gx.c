@@ -27,6 +27,39 @@ u32 GXi_DmaId = GX_DEFAULT_DMAID;
 #if (defined(SDK_ARM9)) || defined(SDK_PORT)
     vu16 GXi_VRamLockId = 0;
 #endif
+#ifdef SDK_PORT
+// The port's registers are separate globals, not one I/O block, so GX_Init's fills from BG0CNT's
+// address (96 bytes, up to DISP_MMEM_FIFO) and from DB_DISPCNT's (up to DB_MASTER_BRIGHT) would
+// run over whatever the compiler put after them. The same registers, cleared one by one.
+static void GXi_PortClearMainRegs(void)
+{
+    reg_G2_BG0CNT = 0; reg_G2_BG1CNT = 0; reg_G2_BG2CNT = 0; reg_G2_BG3CNT = 0; reg_G2_BG0HOFS = 0;
+    reg_G2_BG0OFS = 0; reg_G2_BG0VOFS = 0; reg_G2_BG1HOFS = 0; reg_G2_BG1OFS = 0;
+    reg_G2_BG1VOFS = 0; reg_G2_BG2HOFS = 0; reg_G2_BG2OFS = 0; reg_G2_BG2VOFS = 0;
+    reg_G2_BG3HOFS = 0; reg_G2_BG3OFS = 0; reg_G2_BG3VOFS = 0; reg_G2_BG2PA = 0; reg_G2_BG2PB = 0;
+    reg_G2_BG2PC = 0; reg_G2_BG2PD = 0; reg_G2_BG2X = 0; reg_G2_BG2Y = 0; reg_G2_BG3PA = 0;
+    reg_G2_BG3PB = 0; reg_G2_BG3PC = 0; reg_G2_BG3PD = 0; reg_G2_BG3X = 0; reg_G2_BG3Y = 0;
+    reg_G2_WIN0H = 0; reg_G2_WIN1H = 0; reg_G2_WIN0V = 0; reg_G2_WIN1V = 0; reg_G2_WININ = 0;
+    reg_G2_WINOUT = 0; reg_G2_MOSAIC = 0; reg_G2_BLDCNT = 0; reg_G2_BLDALPHA = 0; reg_G2_BLDY = 0;
+    reg_G3X_DISP3DCNT = 0; reg_GX_DISPCAPCNT = 0;
+}
+
+static void GXi_PortClearSubRegs(void)
+{
+    reg_GXS_DB_DISPCNT = 0; reg_G2S_DB_BG0CNT = 0; reg_G2S_DB_BG1CNT = 0; reg_G2S_DB_BG2CNT = 0;
+    reg_G2S_DB_BG3CNT = 0; reg_G2S_DB_BG0HOFS = 0; reg_G2S_DB_BG0OFS = 0; reg_G2S_DB_BG0VOFS = 0;
+    reg_G2S_DB_BG1HOFS = 0; reg_G2S_DB_BG1OFS = 0; reg_G2S_DB_BG1VOFS = 0; reg_G2S_DB_BG2HOFS = 0;
+    reg_G2S_DB_BG2OFS = 0; reg_G2S_DB_BG2VOFS = 0; reg_G2S_DB_BG3HOFS = 0; reg_G2S_DB_BG3OFS = 0;
+    reg_G2S_DB_BG3VOFS = 0; reg_G2S_DB_BG2PA = 0; reg_G2S_DB_BG2PB = 0; reg_G2S_DB_BG2PC = 0;
+    reg_G2S_DB_BG2PD = 0; reg_G2S_DB_BG2X = 0; reg_G2S_DB_BG2Y = 0; reg_G2S_DB_BG3PA = 0;
+    reg_G2S_DB_BG3PB = 0; reg_G2S_DB_BG3PC = 0; reg_G2S_DB_BG3PD = 0; reg_G2S_DB_BG3X = 0;
+    reg_G2S_DB_BG3Y = 0; reg_G2S_DB_WIN0H = 0; reg_G2S_DB_WIN1H = 0; reg_G2S_DB_WIN0V = 0;
+    reg_G2S_DB_WIN1V = 0; reg_G2S_DB_WININ = 0; reg_G2S_DB_WINOUT = 0; reg_G2S_DB_MOSAIC = 0;
+    reg_G2S_DB_BLDCNT = 0; reg_G2S_DB_BLDALPHA = 0; reg_G2S_DB_BLDY = 0;
+    reg_GXS_DB_MASTER_BRIGHT = 0;
+}
+#endif
+
 
 void GX_Init (void)
 {
@@ -61,8 +94,7 @@ void GX_Init (void)
 #if SDK_VERSION_MAJOR == 5 && defined(SDK_TWL)
     if (GXi_DmaId > 3) {
       #ifdef SDK_PORT
-		  MI_NDmaFill(GXi_DmaId, (void *)REG_BG0CNT_ADDR, 0,
-		             REG_DISP_MMEM_FIFO_OFFSET - REG_BG0CNT_OFFSET);
+		  GXi_PortClearMainRegs();
       #else
       MI_NDmaFill(GXi_DmaId - 4, (void *)REG_BG0CNT_ADDR, 0,
                   REG_DISP_MMEM_FIFO_ADDR - REG_BG0CNT_ADDR);
@@ -70,8 +102,7 @@ void GX_Init (void)
       reg_GX_MASTER_BRIGHT = 0;
 
       #ifdef SDK_PORT
-      MI_NDmaFill(GXi_DmaId - 4, (void *)REG_DB_DISPCNT_ADDR, 0,
-                  REG_DB_MASTER_BRIGHT_OFFSET - REG_DB_DISPCNT_OFFSET + 4);
+      GXi_PortClearSubRegs();
       #else
       MI_NDmaFill(GXi_DmaId - 4, (void *)REG_DB_DISPCNT_ADDR, 0,
                   REG_DB_MASTER_BRIGHT_ADDR - REG_DB_DISPCNT_ADDR + 4);
@@ -79,8 +110,7 @@ void GX_Init (void)
     } else {
 #endif
         #ifdef SDK_PORT
-		MI_DmaFill32(GXi_DmaId, (void *)REG_BG0CNT_ADDR, 0,
-		             REG_DISP_MMEM_FIFO_OFFSET - REG_BG0CNT_OFFSET);
+		GXi_PortClearMainRegs();
         #else
 		MI_DmaFill32(GXi_DmaId, (void *)REG_BG0CNT_ADDR, 0,
 		             REG_DISP_MMEM_FIFO_ADDR - REG_BG0CNT_ADDR);
@@ -88,8 +118,7 @@ void GX_Init (void)
 		reg_GX_MASTER_BRIGHT = 0;
 
         #ifdef SDK_PORT
-		MI_DmaFill32(GXi_DmaId, (void *)REG_DB_DISPCNT_ADDR, 0,
-		             REG_DB_MASTER_BRIGHT_OFFSET - REG_DB_DISPCNT_OFFSET + 4);
+		GXi_PortClearSubRegs();
         #else
 		MI_DmaFill32(GXi_DmaId, (void *)REG_DB_DISPCNT_ADDR, 0,
 		             REG_DB_MASTER_BRIGHT_ADDR - REG_DB_DISPCNT_ADDR + 4);
@@ -99,15 +128,14 @@ void GX_Init (void)
 #endif
 	} else {
         #ifdef SDK_PORT
-		MI_CpuFill32((void *)REG_BG0CNT_ADDR, 0, REG_DISP_MMEM_FIFO_OFFSET - REG_BG0CNT_OFFSET);
+		GXi_PortClearMainRegs();
         #else
 		MI_CpuFill32((void *)REG_BG0CNT_ADDR, 0, REG_DISP_MMEM_FIFO_ADDR - REG_BG0CNT_ADDR);
         #endif
 		reg_GX_MASTER_BRIGHT = 0;
 
         #ifdef SDK_PORT
-		MI_CpuFill32((void *)REG_DB_DISPCNT_ADDR, 0,
-		             REG_DB_MASTER_BRIGHT_OFFSET - REG_DB_DISPCNT_OFFSET + 4);
+		GXi_PortClearSubRegs();
         #else
 		MI_CpuFill32((void *)REG_DB_DISPCNT_ADDR, 0,
 		             REG_DB_MASTER_BRIGHT_ADDR - REG_DB_DISPCNT_ADDR + 4);

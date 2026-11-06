@@ -416,7 +416,7 @@ static void G3SIM_FlushArrayInner()
 
 		float fogDepthBoundary[32];
 		float fogDensity[32];
-		u8 * fogTablePtr = (u8*)&s_reg_G3X_FOG_TABLE_0;
+		const u8 * fogTablePtr = (const u8 *)REG_FOG_TABLE_0_ADDR; // 32 bytes, FOG_TABLE_0..7
 		for(int i=0; i < 32; i++) {
 			fogDepthBoundary[i] = ((float)(fogOffset + fogStep*(i+1)) / 32767.0f) * 2.0f - 1.0f;
 			fogDensity[i] = (float)fogTablePtr[i] / 127.0f;
