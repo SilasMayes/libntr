@@ -80,6 +80,9 @@ typedef struct {
     u8 perfOverlay; /* Show the frame timings over the game */
     u8 fastForwardSpeed; /* Fast-forward: times the normal speed (0: as fast as it goes) */
     u8 fastForwardToggle; /* Fast-forward button: TRUE switches it on and off, FALSE works while held */
+    u8 testMode; /* Test rigs: vblanks as fast as they go, a frame shown every testModePresentMs, dummy audio */
+    u32 testModePresentMs; /* Test mode: show a frame this often (0: never) */
+    u8 testModeSpeed; /* Test mode: times the DS's speed at most (0: as fast as it goes) */
     u8 macAddr[6]; /* MAC address */
     SIM_config_pad_settings_type padSettings; /* Input pad settings */
     NVRAMConfig osNvramConfig; /* OS NVRAM config */

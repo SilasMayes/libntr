@@ -143,6 +143,16 @@ extern "C" void SIM_SetFastForward(BOOL on) {
   sFastForwardOn = on != FALSE;
 }
 
+// Test mode (sim.h): TestMode=true in sim_config.ini or LIBNTR_TEST_MODE=1 in the environment
+extern "C" BOOL SIM_IsTestMode(void) {
+  static int sFromEnv = -1;
+  if (sFromEnv < 0) {
+    const char *env = getenv("LIBNTR_TEST_MODE");
+    sFromEnv = (env != NULL && env[0] == '1') ? 1 : 0;
+  }
+  return (sFromEnv || s_SIM_config.testMode) ? TRUE : FALSE;
+}
+
 // The fast-forward button: held, or pressed to switch it on and off (FastForwardToggle)
 static void FastForwardButton(bool down) {
   if (SIM_GetConfigPtr()->fastForwardToggle) {
@@ -808,6 +818,17 @@ void SIM_SetInternalResolutionAfterRender(int internalRes) {
 }
 
 void *SIM_RenderInit(void *arg) {
+
+  if (SIM_IsTestMode()) {
+#ifndef SDK_BUILD_ANDROID
+    setenv("SDL_AUDIODRIVER", "dummy", 0); // unless the environment names a driver
+#endif
+    printf("libntr: test mode: DS frames at %ux speed at most (0: unlimited), a frame shown every %u ms, "
+           "audio driver %s\n",
+           (unsigned)s_SIM_config.testModeSpeed, (unsigned)s_SIM_config.testModePresentMs,
+           getenv("SDL_AUDIODRIVER") != NULL ? getenv("SDL_AUDIODRIVER") : "default");
+    fflush(stdout);
+  }
 
   SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER |
            SDL_INIT_JOYSTICK);
@@ -1626,7 +1647,9 @@ void *SIM_Render(void *arg) {
     // A frame the game will replace before it's seen (SIM_SkipNextFrame) isn't drawn: the
     // game still runs, with its input and vblank handlers
     const bool paused = SIM::GUI::IsGameLogicPaused();
-    const bool fastForward = SIM_IsFastForwarding() && !paused;
+    // Test mode runs like an unlimited fast-forward that shows a frame every TestModePresentMs
+    const bool testMode = SIM_IsTestMode() != FALSE;
+    const bool fastForward = (SIM_IsFastForwarding() || testMode) && !paused;
     if (fastForward != sFastForwardSwap) {
       // Fast-forward doesn't wait for the display's refresh
       sFastForwardSwap = fastForward;
@@ -1634,7 +1657,12 @@ void *SIM_Render(void *arg) {
       sNextVBlankNs = 0;
     }
     bool present = !(sSkipNextFrame && !paused);
-    if (fastForward && SIM_NowNs() - sLastPresentNs < 15000000ull) {
+    if (testMode && !paused) {
+      const u64 presentNs = (u64)s_SIM_config.testModePresentMs * 1000000ull;
+      if (presentNs == 0 || SIM_NowNs() - sLastPresentNs < presentNs) {
+        present = false;
+      }
+    } else if (fastForward && SIM_NowNs() - sLastPresentNs < 15000000ull) {
       present = false; // about 60 frames a second shown, whatever the speed
     }
     sSkipNextFrame = false;
@@ -2258,7 +2286,11 @@ void *SIM_Render(void *arg) {
 
     // Limit framerate to 60 fps
     if (fastForward) {
-      if (s_SIM_config.fastForwardSpeed > 0 && s_SIM_config.capFrameRate) {
+      if (testMode) {
+        if (s_SIM_config.testModeSpeed > 0) {
+          PaceVBlank(16666667ull / s_SIM_config.testModeSpeed); // TestModeSpeed: a cap for scripts
+        }
+      } else if (s_SIM_config.fastForwardSpeed > 0 && s_SIM_config.capFrameRate) {
         PaceVBlank(16666667ull / s_SIM_config.fastForwardSpeed);
       }
     } else if (s_SIM_config.capFrameRate) {

@@ -131,6 +131,15 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("General", "FastForwardToggle")) {
         config->fastForwardToggle = StringToBool(value);
     }
+    if(MATCH("General", "TestMode")) {
+        config->testMode = StringToBool(value);
+    }
+    if(MATCH("General", "TestModePresentMs")) {
+        config->testModePresentMs = (u32)atoi(value);
+    }
+    if(MATCH("General", "TestModeSpeed")) {
+        config->testModeSpeed = (u8)atoi(value);
+    }
 
     if(MATCH("General", "MacAddr")) {
         char * pos = value;
@@ -450,6 +459,9 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->edgeMarking = TRUE;
     aConfig->fastForwardSpeed = 4;
     aConfig->fastForwardToggle = FALSE;
+    aConfig->testMode = FALSE;
+    aConfig->testModePresentMs = 500;
+    aConfig->testModeSpeed = 0;
     aConfig->masterVolume = 127;
 
     aConfig->padSettings.joyAxisDeadzone = 32767 / 4;
@@ -564,6 +576,9 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
     fprintf(configFile, "PerfOverlay=%s\n", BoolToString(aConfig->perfOverlay));
     fprintf(configFile, "FastForwardSpeed=%d\n", aConfig->fastForwardSpeed);
     fprintf(configFile, "FastForwardToggle=%s\n", BoolToString(aConfig->fastForwardToggle));
+    fprintf(configFile, "TestMode=%s\n", BoolToString(aConfig->testMode));
+    fprintf(configFile, "TestModePresentMs=%u\n", aConfig->testModePresentMs);
+    fprintf(configFile, "TestModeSpeed=%d\n", aConfig->testModeSpeed);
     fprintf(configFile, "MacAddr=%02x%02x%02x%02x%02x%02x\n", aConfig->macAddr[0],
                                                               aConfig->macAddr[1],
                                                               aConfig->macAddr[2],

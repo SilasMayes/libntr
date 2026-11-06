@@ -149,6 +149,12 @@ long long SIM_GetClockOffset(void);
 // and off by it (FastForwardToggle), or by the game (SIM_SetFastForward, e.g. a button
 // in its own UI).
 BOOL SIM_IsFastForwarding(void);
+// Test mode (TestMode=true in sim_config.ini, or LIBNTR_TEST_MODE=1): for test rigs. DS frames run
+// as fast as they go (or TestModeSpeed times the DS's speed at most), a frame is shown every
+// TestModePresentMs (default 500; 0: never), audio goes to SDL's dummy driver unless SDL_AUDIODRIVER
+// says otherwise. The game, its 3D and its swaps run every DS frame; the 2D composition and the
+// window swap only for the frames shown, as with fast-forward.
+BOOL SIM_IsTestMode(void);
 void SIM_SetFastForward(BOOL on);
 const char * SIM_GetLibntrGitHash();
 const char * SIM_GetProjectGitHash();
