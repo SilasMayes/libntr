@@ -155,6 +155,9 @@ static int IniHandler(void* user, const char* section, const char* name,
     if(MATCH("PAD", "JoyAxisDeadzone")) {
         config->padSettings.joyAxisDeadzone = atoi(value);
     }
+    if(MATCH("PAD", "LeftStickDpad")) {
+        config->padSettings.leftStickDpad = StringToBool(value);
+    }
     if(MATCH("PAD", "AKey")) {
         config->padSettings.aKey = atoi(value);
     }
@@ -465,6 +468,7 @@ void SIM_Config_LoadDefaults(SIM_config_type * aConfig)
     aConfig->masterVolume = 127;
 
     aConfig->padSettings.joyAxisDeadzone = 32767 / 4;
+    aConfig->padSettings.leftStickDpad = TRUE;
     aConfig->padSettings.aKey = SDLK_z;
     aConfig->padSettings.bKey = SDLK_x;
     aConfig->padSettings.xKey = SDLK_c;
@@ -589,6 +593,7 @@ void SIM_Config_SaveConfigFile(SIM_config_type * aConfig)
 
     fprintf(configFile, "[PAD]\n");
     fprintf(configFile, "JoyAxisDeadzone=%d\n", aConfig->padSettings.joyAxisDeadzone);
+    fprintf(configFile, "LeftStickDpad=%s\n", BoolToString(aConfig->padSettings.leftStickDpad));
     fprintf(configFile, "AKey=%d\n", aConfig->padSettings.aKey);
     fprintf(configFile, "BKey=%d\n", aConfig->padSettings.bKey);
     fprintf(configFile, "XKey=%d\n", aConfig->padSettings.xKey);

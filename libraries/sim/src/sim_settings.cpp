@@ -350,6 +350,16 @@ void DrawFastForward() {
   }
 }
 
+void DrawLeftStick() {
+  SIM_config_pad_settings_type &pad = SIM_GetConfigPtr()->padSettings;
+  bool on = pad.leftStickDpad != 0;
+  if (Toggle("Left stick as D-pad", "The left stick moves you and the menu cursors like the D-pad, which keeps "
+             "working too. One direction at a time: the way the stick is pushed furthest.", &on)) {
+    pad.leftStickDpad = on ? TRUE : FALSE;
+    SaveConfig();
+  }
+}
+
 void DrawControls() {
   if (sCaptureTarget != nullptr && SDL_GetTicks64() > sCaptureUntil) {
     sCaptureTarget = nullptr;
@@ -360,6 +370,7 @@ void DrawControls() {
   Note("Back button or R3: this menu. L3: the Gear on the whole lower screen. R2: fast-forward. The D-pad always "
        "works as the D-pad.");
   Section("Controller");
+  DrawLeftStick();
   for (const Control &control : kControls) {
     if (control.joyKey != nullptr && strcmp(control.name, "Up") != 0 && strcmp(control.name, "Down") != 0 &&
         strcmp(control.name, "Left") != 0 && strcmp(control.name, "Right") != 0) {
@@ -373,6 +384,7 @@ void DrawControls() {
     ControlRow(control, false);
   }
   Section("Controller");
+  DrawLeftStick();
   for (const Control &control : kControls) {
     if (control.joyKey != nullptr) {
       ControlRow(control, true);

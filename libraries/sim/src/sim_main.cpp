@@ -1384,6 +1384,96 @@ static void DrawEngine(BOOL isSub) {
 #endif
 }
 
+// The four directions are bits 4-7 of KEYINPUT (0 = held). Several sources can hold one: the
+// keyboard, the controller's configured bindings (normally the D-pad) and the left stick, which
+// works as a second D-pad (Settings > Controls > Left stick as D-pad, on by default) unless one of
+// its axes is bound to a control. A direction stays held while any source holds it, so releasing
+// the stick doesn't drop a direction the D-pad holds.
+enum { PAD_DIR_RIGHT = 1 << 4, PAD_DIR_LEFT = 1 << 5, PAD_DIR_UP = 1 << 6, PAD_DIR_DOWN = 1 << 7 };
+enum { DIR_SOURCE_KEYBOARD, DIR_SOURCE_JOY, DIR_SOURCE_STICK, DIR_SOURCE_COUNT };
+static u16 sDirectionHeld[DIR_SOURCE_COUNT];
+
+static void SetDirectionHeld(int source, u16 bit, bool held) {
+  if (held) {
+    sDirectionHeld[source] |= bit;
+  } else {
+    sDirectionHeld[source] &= (u16)~bit;
+  }
+  u16 any = 0;
+  for (int i = 0; i < DIR_SOURCE_COUNT; i++) {
+    any |= sDirectionHeld[i];
+  }
+  const u16 allDirections = PAD_DIR_RIGHT | PAD_DIR_LEFT | PAD_DIR_UP | PAD_DIR_DOWN;
+  s_reg_PAD_KEYINPUT = (u16)((s_reg_PAD_KEYINPUT | allDirections) & ~any);
+}
+
+// Left stick: SDL joystick axes 0 (x, right +) and 1 (y, down +) on Android and PC controllers
+static const int kStickAxisX = 0;
+static const int kStickAxisY = 1;
+static int sStickX = 0;
+static int sStickY = 0;
+
+static bool StickAxisIsBound(int axis) {
+  const SIM_config_pad_settings_type &pad = s_SIM_config.padSettings;
+  const int keys[] = { pad.aJoyKey, pad.bJoyKey, pad.xJoyKey, pad.yJoyKey, pad.lJoyKey, pad.rJoyKey,
+                       pad.startJoyKey, pad.selectJoyKey, pad.upJoyKey, pad.downJoyKey, pad.leftJoyKey,
+                       pad.rightJoyKey, pad.fastForwardJoyKey };
+  for (int key : keys) {
+    if (key == (axis | SIM_CONFIG_JOY_AXIS_PLUS_MASK) || key == (axis | SIM_CONFIG_JOY_AXIS_MINUS_MASK)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// One direction at a time, the axis pushed furthest, like a D-pad held straight: diagonals
+// would make menu cursors skip. Pushed past about 45% to start, held until under about 30%.
+static void UpdateStickDirection() {
+  const int pressAt = 32767 * 45 / 100;
+  const int releaseAt = 32767 * 30 / 100;
+  const int ax = sStickX < 0 ? -sStickX : sStickX;
+  const int ay = sStickY < 0 ? -sStickY : sStickY;
+  const int magnitude = ax > ay ? ax : ay;
+  const bool holding = sDirectionHeld[DIR_SOURCE_STICK] != 0;
+
+  u16 direction = 0;
+  if (magnitude >= (holding ? releaseAt : pressAt)) {
+    if (ax > ay) {
+      direction = sStickX > 0 ? PAD_DIR_RIGHT : PAD_DIR_LEFT;
+    } else {
+      direction = sStickY > 0 ? PAD_DIR_DOWN : PAD_DIR_UP;
+    }
+  }
+  if (direction == sDirectionHeld[DIR_SOURCE_STICK]) {
+    return;
+  }
+  SetDirectionHeld(DIR_SOURCE_STICK, PAD_DIR_RIGHT | PAD_DIR_LEFT | PAD_DIR_UP | PAD_DIR_DOWN, false);
+  if (direction != 0) {
+    SetDirectionHeld(DIR_SOURCE_STICK, direction, true);
+  }
+}
+
+static void HandleStickAxis(int axis, int value) {
+  if (axis != kStickAxisX && axis != kStickAxisY) {
+    return;
+  }
+  if (!s_SIM_config.padSettings.leftStickDpad || StickAxisIsBound(kStickAxisX) ||
+      StickAxisIsBound(kStickAxisY)) {
+    // Switched off, or bound in Settings > Controls: the bindings decide what the stick does
+    sStickX = sStickY = 0;
+    if (sDirectionHeld[DIR_SOURCE_STICK] != 0) {
+      SetDirectionHeld(DIR_SOURCE_STICK, PAD_DIR_RIGHT | PAD_DIR_LEFT | PAD_DIR_UP | PAD_DIR_DOWN, false);
+    }
+    return;
+  }
+  if (axis == kStickAxisX) {
+    sStickX = value;
+  } else {
+    sStickY = value;
+  }
+  UpdateStickDirection();
+}
+
 static void HandleJoystickKeyDown(int aKey) {
   if (aKey == s_SIM_config.padSettings.fastForwardJoyKey && aKey != SIM_CONFIG_JOY_INVALID_KEY) {
     if (!sFastForwardJoyDown) {
@@ -1406,16 +1496,16 @@ static void HandleJoystickKeyDown(int aKey) {
     *(vu16 *)HW_BUTTON_XY_BUF = *(vu16 *)HW_BUTTON_XY_BUF & 0b1111010000000000;
   } else if (aKey == s_SIM_config.padSettings.upJoyKey) {
     // Dpad Up
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111110111111;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_UP, true);
   } else if (aKey == s_SIM_config.padSettings.downJoyKey) {
     // Dpad Down
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111101111111;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_DOWN, true);
   } else if (aKey == s_SIM_config.padSettings.leftJoyKey) {
     // Dpad Left
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111111011111;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_LEFT, true);
   } else if (aKey == s_SIM_config.padSettings.rightJoyKey) {
     // Dpad Right
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111111101111;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_RIGHT, true);
   } else if (aKey == s_SIM_config.padSettings.lJoyKey) {
     // L
     s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111110111111111;
@@ -1487,16 +1577,16 @@ static void HandleJoystickKeyUp(int aKey) {
     *(vu16 *)HW_BUTTON_XY_BUF = *(vu16 *)HW_BUTTON_XY_BUF | 0b0000100000000000;
   } else if (aKey == s_SIM_config.padSettings.upJoyKey) {
     // Dpad Up
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000001000000;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_UP, false);
   } else if (aKey == s_SIM_config.padSettings.downJoyKey) {
     // Dpad Down
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000010000000;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_DOWN, false);
   } else if (aKey == s_SIM_config.padSettings.leftJoyKey) {
     // Dpad Left
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000000100000;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_LEFT, false);
   } else if (aKey == s_SIM_config.padSettings.rightJoyKey) {
     // Dpad Right
-    s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000000010000;
+    SetDirectionHeld(DIR_SOURCE_JOY, PAD_DIR_RIGHT, false);
   } else if (aKey == s_SIM_config.padSettings.lJoyKey) {
     // L
     s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000001000000000;
@@ -1861,16 +1951,16 @@ void *SIM_Render(void *arg) {
               *(vu16 *)HW_BUTTON_XY_BUF & 0b1111010000000000;
         } else if (keyRead == s_SIM_config.padSettings.upKey) {
           // Dpad Up
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111110111111;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_UP, true);
         } else if (keyRead == s_SIM_config.padSettings.downKey) {
           // Dpad Down
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111101111111;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_DOWN, true);
         } else if (keyRead == s_SIM_config.padSettings.leftKey) {
           // Dpad Left
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111111011111;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_LEFT, true);
         } else if (keyRead == s_SIM_config.padSettings.rightKey) {
           // Dpad Right
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111111111101111;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_RIGHT, true);
         } else if (keyRead == s_SIM_config.padSettings.lKey) {
           // L
           s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT & 0b1111110111111111;
@@ -1918,16 +2008,16 @@ void *SIM_Render(void *arg) {
               *(vu16 *)HW_BUTTON_XY_BUF | 0b0000100000000000;
         } else if (keyRead == s_SIM_config.padSettings.upKey) {
           // Dpad Up
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000001000000;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_UP, false);
         } else if (keyRead == s_SIM_config.padSettings.downKey) {
           // Dpad Down
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000010000000;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_DOWN, false);
         } else if (keyRead == s_SIM_config.padSettings.leftKey) {
           // Dpad Left
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000000100000;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_LEFT, false);
         } else if (keyRead == s_SIM_config.padSettings.rightKey) {
           // Dpad Right
-          s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000000000010000;
+          SetDirectionHeld(DIR_SOURCE_KEYBOARD, PAD_DIR_RIGHT, false);
         } else if (keyRead == s_SIM_config.padSettings.lKey) {
           // L
           s_reg_PAD_KEYINPUT = s_reg_PAD_KEYINPUT | 0b0000001000000000;
@@ -1990,6 +2080,7 @@ void *SIM_Render(void *arg) {
         }
       }
       if (Event.type == SDL_JOYAXISMOTION) {
+        HandleStickAxis(Event.jaxis.axis, Event.jaxis.value);
         if (Event.jaxis.value > s_SIM_config.padSettings.joyAxisDeadzone ||
             Event.jaxis.value <
                 (s_SIM_config.padSettings.joyAxisDeadzone * -1)) {
