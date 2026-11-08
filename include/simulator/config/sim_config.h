@@ -33,6 +33,7 @@ typedef struct {
 
     // Joystick keys
     int joyAxisDeadzone;
+    int leftStickDpad; // the left stick also works as the D-pad (unless one of its axes is bound)
     int aJoyKey;
     int bJoyKey;
     int xJoyKey;
